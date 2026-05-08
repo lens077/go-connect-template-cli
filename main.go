@@ -114,7 +114,7 @@ func handleNewCommand() {
 		}
 	}
 
-	fmt.Printf("Application %s created successfully at %s\n", appName, targetPath)
+	fmt.Printf("services %s created successfully at %s\n", appName, targetPath)
 }
 
 // handleProtoCommand 处理 proto 子命令
@@ -163,11 +163,11 @@ func handleProtoCommand() {
 // printUsage 打印使用帮助
 func printUsage() {
 	fmt.Println("Usage:")
-	fmt.Println("  co new <application/path> [-r <repo-url>] [--nomod]")
+	fmt.Println("  co new <services/path> [-r <repo-url>] [--nomod]")
 	fmt.Println("  co proto [add|client|server] [options]")
 	fmt.Println()
 	fmt.Println("Subcommands:")
-	fmt.Println("  new       Create a new application from template")
+	fmt.Println("  new       Create a new services from template")
 	fmt.Println("  proto     Proto file generation commands")
 	fmt.Println()
 	fmt.Println("Proto Subcommands:")
@@ -299,18 +299,18 @@ func generateProtoServer(protoPath, targetDir string) error {
 	// 2. 构建应用模块路径
 	appModule := rootModuleName
 	if appModule != "" {
-		// 从当前目录中提取应用相对路径，只包含从application开始的部分
+		// 从当前目录中提取应用相对路径，只包含从services开始的部分
 		relPath, err := filepath.Rel(currentDir, rootDir)
 		if err == nil {
 			// 如果当前目录是根目录的子目录，添加相对路径
 			if relPath != "." {
-				// 检查relPath是否包含application目录
-				if strings.Contains(relPath, "application") {
-					// 只保留从application开始的部分
+				// 检查relPath是否包含services目录
+				if strings.Contains(relPath, "services") {
+					// 只保留从services开始的部分
 					pathParts := strings.Split(relPath, "/")
 					appIndex := -1
 					for i, part := range pathParts {
-						if part == "application" {
+						if part == "services" {
 							appIndex = i
 							break
 						}
@@ -415,11 +415,11 @@ func updateAllGoFiles(root, oldModule, newModule string) error {
 
 			content := string(data)
 
-			content = strings.ReplaceAll(content, oldModule, newModule)
+			content = strings.ReplaceAll(content, "\""+oldModule+"/", "\""+newModule+"/")
 
-			// 将连字符替换为下划线，因为 Go 类型名称不能包含连字符
+			content = strings.ReplaceAll(content, oldModule+".", newModule+".")
+
 			cleanAppName := strings.ReplaceAll(newModule, "-", "_")
-			// 对每个下划线分隔的单词进行标题化处理
 			parts := strings.Split(cleanAppName, "_")
 			for i, part := range parts {
 				parts[i] = strings.Title(part)
@@ -629,7 +629,7 @@ func updateGoFilesForMonorepo(root, oldModule, newModulePath string) error {
 			}
 			var rootModuleName string
 			for i, part := range parts {
-				if part == "application" {
+				if part == "services" {
 					rootModuleName = strings.Join(parts[:i], "/")
 					break
 				}
@@ -650,11 +650,11 @@ func updateGoFilesForMonorepo(root, oldModule, newModulePath string) error {
 			content = regexp.MustCompile(`"api/([^"]+)"`).ReplaceAllString(content, `"`+rootModuleName+`/api/$1"`)
 
 			appName := parts[len(parts)-1]
-			appApiPrefix := rootModuleName + "/application/" + appName + "/api/"
+			appApiPrefix := rootModuleName + "/services/" + appName + "/api/"
 			rootApiPrefix := rootModuleName + "/api/"
 			content = strings.ReplaceAll(content, appApiPrefix, rootApiPrefix)
 
-			appApiRegex := regexp.MustCompile(`"` + regexp.QuoteMeta(rootModuleName) + `/application/[^/]+/api/([^"]+)"`)
+			appApiRegex := regexp.MustCompile(`"` + regexp.QuoteMeta(rootModuleName) + `/services/[^/]+/api/([^"]+)"`)
 			content = appApiRegex.ReplaceAllString(content, `"`+rootModuleName+`/api/$1"`)
 
 			// 将连字符替换为下划线，因为 Go 类型名称不能包含连字符
