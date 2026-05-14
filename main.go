@@ -77,17 +77,17 @@ func handleNewCommand() {
 		}
 	} else {
 		goModPath := filepath.Join(targetPath, "go.mod")
-		if err := updateGoMod(goModPath, "github.com/lens077/go-connect-template", appName); err != nil {
+		if err := updateGoMod(goModPath, "github.com/lens077/go-connect-template", appPath); err != nil {
 			fmt.Printf("Failed to update go.mod: %v\n", err)
 			os.Exit(1)
 		}
 
-		if err := updateAllGoFiles(targetPath, "github.com/lens077/go-connect-template", appName); err != nil {
+		if err := updateAllGoFiles(targetPath, "github.com/lens077/go-connect-template", appPath); err != nil {
 			fmt.Printf("Failed to update go files: %v\n", err)
 			os.Exit(1)
 		}
 
-		if err := updateProtoFiles(targetPath, "github.com/lens077/go-connect-template", appName); err != nil {
+		if err := updateProtoFiles(targetPath, "github.com/lens077/go-connect-template", appPath); err != nil {
 			fmt.Printf("Failed to update proto files: %v\n", err)
 			os.Exit(1)
 		}
@@ -402,6 +402,11 @@ func updateGoMod(path, oldModule, newModule string) error {
 
 // updateAllGoFiles 更新所有go文件中的import路径
 func updateAllGoFiles(root, oldModule, newModule string) error {
+	// 提取新模块中的服务名称（如 "inventory"）
+	serviceName := extractServiceName(newModule)
+	serviceNameTitle := strings.Title(serviceName)
+	serviceNameLower := strings.ToLower(serviceName)
+
 	return filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
 			return err
@@ -415,10 +420,20 @@ func updateAllGoFiles(root, oldModule, newModule string) error {
 
 			content := string(data)
 
+			// 1. 替换模块路径
 			content = strings.ReplaceAll(content, "\""+oldModule+"/", "\""+newModule+"/")
-
 			content = strings.ReplaceAll(content, oldModule+".", newModule+".")
 
+			// 2. 替换 api/user/v1 为 api/{serviceName}/v1
+			content = strings.ReplaceAll(content, "/api/user/v1", "/api/"+serviceName+"/v1")
+			content = strings.ReplaceAll(content, "api/user/v1", "api/"+serviceName+"/v1")
+
+			// 3. 替换 userv1connect 为 {serviceName}v1connect
+			content = strings.ReplaceAll(content, "userv1connect", serviceNameLower+"v1connect")
+			content = strings.ReplaceAll(content, "UserServiceHandler", serviceNameTitle+"ServiceHandler")
+			content = strings.ReplaceAll(content, "NewUserServiceHandler", "New"+serviceNameTitle+"ServiceHandler")
+
+			// 4. 替换类型名称
 			cleanAppName := strings.ReplaceAll(newModule, "-", "_")
 			parts := strings.Split(cleanAppName, "_")
 			for i, part := range parts {
@@ -449,6 +464,17 @@ func updateAllGoFiles(root, oldModule, newModule string) error {
 
 		return nil
 	})
+}
+
+// extractServiceName 从模块路径中提取服务名称
+func extractServiceName(modulePath string) string {
+	// 路径格式: service/inventory 或 inventory
+	parts := strings.Split(modulePath, "/")
+	if len(parts) < 1 {
+		return ""
+	}
+	// 返回最后一部分（服务名称）
+	return parts[len(parts)-1]
 }
 
 // updateProtoFiles 更新所有proto文件中的package和go_package字段
