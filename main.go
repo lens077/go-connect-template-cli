@@ -98,8 +98,8 @@ func handleNewCommand() {
 			os.Exit(1)
 		}
 
-		if err := renameUserFiles(targetPath, appName); err != nil {
-			fmt.Printf("Failed to rename user.go files: %v\n", err)
+		if err := renameSearchFiles(targetPath, appName); err != nil {
+			fmt.Printf("Failed to rename search.go files: %v\n", err)
 			os.Exit(1)
 		}
 
@@ -424,14 +424,14 @@ func updateAllGoFiles(root, oldModule, newModule string) error {
 			content = strings.ReplaceAll(content, "\""+oldModule+"/", "\""+newModule+"/")
 			content = strings.ReplaceAll(content, oldModule+".", newModule+".")
 
-			// 2. 替换 api/user/v1 为 api/{serviceName}/v1
-			content = strings.ReplaceAll(content, "/api/user/v1", "/api/"+serviceName+"/v1")
-			content = strings.ReplaceAll(content, "api/user/v1", "api/"+serviceName+"/v1")
+			// 2. 替换 api/search/v1 为 api/{serviceName}/v1
+			content = strings.ReplaceAll(content, "/api/search/v1", "/api/"+serviceName+"/v1")
+			content = strings.ReplaceAll(content, "api/search/v1", "api/"+serviceName+"/v1")
 
-			// 3. 替换 userv1connect 为 {serviceName}v1connect
-			content = strings.ReplaceAll(content, "userv1connect", serviceNameLower+"v1connect")
-			content = strings.ReplaceAll(content, "UserServiceHandler", serviceNameTitle+"ServiceHandler")
-			content = strings.ReplaceAll(content, "NewUserServiceHandler", "New"+serviceNameTitle+"ServiceHandler")
+			// 3. 替换 searchv1connect 为 {serviceName}v1connect
+			content = strings.ReplaceAll(content, "searchv1connect", serviceNameLower+"v1connect")
+			content = strings.ReplaceAll(content, "SearchServiceHandler", serviceNameTitle+"ServiceHandler")
+			content = strings.ReplaceAll(content, "NewSearchServiceHandler", "New"+serviceNameTitle+"ServiceHandler")
 
 			// 4. 替换类型名称
 			cleanAppName := strings.ReplaceAll(newModule, "-", "_")
@@ -440,22 +440,20 @@ func updateAllGoFiles(root, oldModule, newModule string) error {
 				parts[i] = strings.Title(part)
 			}
 			appName := strings.Join(parts, "")
-			content = strings.ReplaceAll(content, "ErrUserAlreadyExists", "Err"+appName+"AlreadyExists")
-			content = strings.ReplaceAll(content, "ErrUserNotFound", "Err"+appName+"NotFound")
-			content = strings.ReplaceAll(content, "ErrAuthFailed", "Err"+appName+"AuthFailed")
-			content = strings.ReplaceAll(content, "UserInfo", appName+"Info")
-			content = strings.ReplaceAll(content, "UserRepo", appName+"Repo")
-			content = strings.ReplaceAll(content, "UserUseCase", appName+"UseCase")
-			content = strings.ReplaceAll(content, "UserService", appName+"Service")
-			content = strings.ReplaceAll(content, "userRepo", strings.ToLower(appName[:1])+appName[1:]+"Repo")
-			content = strings.ReplaceAll(content, "NewUserRepo", "New"+appName+"Repo")
-			content = strings.ReplaceAll(content, "NewUserUseCase", "New"+appName+"UseCase")
-			content = strings.ReplaceAll(content, "NewUserService", "New"+appName+"Service")
+			content = strings.ReplaceAll(content, "SearchService", appName+"Service")
+			content = strings.ReplaceAll(content, "SearchUseCase", appName+"UseCase")
+			content = strings.ReplaceAll(content, "SearchRepo", appName+"Repo")
+			content = strings.ReplaceAll(content, "searchRepo", strings.ToLower(appName[:1])+appName[1:]+"Repo")
+			content = strings.ReplaceAll(content, "NewSearchService", "New"+appName+"Service")
+			content = strings.ReplaceAll(content, "NewSearchUseCase", "New"+appName+"UseCase")
+			content = strings.ReplaceAll(content, "NewSearchRepo", "New"+appName+"Repo")
 
-			content = strings.ReplaceAll(content, "SignInRequest", appName+"SignInRequest")
-			content = strings.ReplaceAll(content, "SignInResponse", appName+"SignInResponse")
-			content = strings.ReplaceAll(content, "GetUserProfileRequest", "Get"+appName+"ProfileRequest")
-			content = strings.ReplaceAll(content, "GetUserProfileResponse", "Get"+appName+"ProfileResponse")
+			// 5. 替换业务方法和请求/响应类型
+			content = strings.ReplaceAll(content, "SearchRequest", appName+"Request")
+			content = strings.ReplaceAll(content, "SearchResponse", appName+"Response")
+
+			// 6. 替换变量名
+			content = strings.ReplaceAll(content, "searchv1Service", serviceNameLower+"v1Service")
 
 			if err := os.WriteFile(path, []byte(content), 0644); err != nil {
 				return err
@@ -607,8 +605,8 @@ conf:
 
 	}
 
-	if err := renameUserFiles(targetPath, appName); err != nil {
-		return fmt.Errorf("failed to rename user.go files: %w", err)
+	if err := renameSearchFiles(targetPath, appName); err != nil {
+		return fmt.Errorf("failed to rename search.go files: %w", err)
 	}
 
 	if err := createTestFiles(targetPath, fullImportPath); err != nil {
@@ -753,8 +751,8 @@ func ensureMainImports(path, appName string) error {
 	return os.WriteFile(path, []byte(content), 0644)
 }
 
-// renameUserFiles 将所有 user.go 文件重命名为 appName.go
-func renameUserFiles(root, appName string) error {
+// renameSearchFiles 将所有 search.go 文件重命名为 appName.go
+func renameSearchFiles(root, appName string) error {
 	// 将连字符替换为下划线，因为 Go 文件名不能包含连字符
 	fileName := strings.ReplaceAll(appName, "-", "_")
 	return filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
@@ -762,7 +760,7 @@ func renameUserFiles(root, appName string) error {
 			return err
 		}
 
-		if !info.IsDir() && filepath.Base(path) == "user.go" {
+		if !info.IsDir() && filepath.Base(path) == "search.go" {
 			dir := filepath.Dir(path)
 			newPath := filepath.Join(dir, fileName+".go")
 
