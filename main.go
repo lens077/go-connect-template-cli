@@ -434,8 +434,8 @@ func updateAllGoFiles(root, oldModule, newModule string) error {
 			content = strings.ReplaceAll(content, "NewSearchServiceHandler", "New"+serviceNameTitle+"ServiceHandler")
 
 			// 4. 替换类型名称
-			cleanAppName := strings.ReplaceAll(newModule, "-", "_")
-			parts := strings.Split(cleanAppName, "_")
+			cleanServiceName := strings.ReplaceAll(serviceName, "-", "_")
+			parts := strings.Split(cleanServiceName, "_")
 			for i, part := range parts {
 				parts[i] = strings.Title(part)
 			}
@@ -477,8 +477,13 @@ func extractServiceName(modulePath string) string {
 
 // updateProtoFiles 更新所有proto文件中的package和go_package字段
 func updateProtoFiles(root, oldModule, newModule string) error {
+	// 提取服务名称
+	serviceName := extractServiceName(newModule)
+	serviceNameTitle := strings.Title(serviceName)
+	serviceNameLower := strings.ToLower(serviceName)
+
 	// 将服务名称中的连字符替换为下划线，用于package字段
-	protoPackageName := strings.ReplaceAll(newModule, "-", "_")
+	cleanServiceName := strings.ReplaceAll(serviceName, "-", "_")
 
 	return filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
@@ -495,10 +500,18 @@ func updateProtoFiles(root, oldModule, newModule string) error {
 
 			// 修改go_package中的旧module名称为新名称
 			content = strings.ReplaceAll(content, oldModule, newModule)
+			// 修改go_package中的包名部分
+			content = strings.ReplaceAll(content, ";searchv1\"", ";"+serviceNameLower+"v1\"")
 
 			// 修改package字段，使用下划线替换连字符
-			packageRegex := regexp.MustCompile(`package\s+\w+\.(v\d+);`)
-			content = packageRegex.ReplaceAllString(content, "package "+protoPackageName+".$1;")
+			packageRegex := regexp.MustCompile(`package\s+search\.(v\d+);`)
+			content = packageRegex.ReplaceAllString(content, "package "+cleanServiceName+".$1;")
+
+			// 替换 Search 相关的内容
+			content = strings.ReplaceAll(content, "service SearchService", "service "+serviceNameTitle+"Service")
+			content = strings.ReplaceAll(content, "SearchRequest", serviceNameTitle+"Request")
+			content = strings.ReplaceAll(content, "SearchResponse", serviceNameTitle+"Response")
+			content = strings.ReplaceAll(content, "api/search/v1", "api/"+serviceNameLower+"/v1")
 
 			if err := os.WriteFile(path, []byte(content), 0644); err != nil {
 				return err
@@ -755,24 +768,69 @@ func ensureMainImports(path, appName string) error {
 func renameSearchFiles(root, appName string) error {
 	// 将连字符替换为下划线，因为 Go 文件名不能包含连字符
 	fileName := strings.ReplaceAll(appName, "-", "_")
-	return filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
+	serviceName := extractServiceName(appName)
+	serviceNameLower := strings.ToLower(serviceName)
+
+	// 收集所有需要重命名的文件和目录
+	var renameDirs []struct{ old, new string }
+	var renameFiles []struct{ old, new string }
+
+	// 先收集所有需要重命名的内容
+	err := filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
 			return err
 		}
 
-		if !info.IsDir() && filepath.Base(path) == "search.go" {
-			dir := filepath.Dir(path)
-			newPath := filepath.Join(dir, fileName+".go")
-
-			if err := os.Rename(path, newPath); err != nil {
-				return fmt.Errorf("failed to rename %s to %s: %w", path, newPath, err)
+		if info.IsDir() {
+			// 找到 api/search 目录
+			if filepath.Base(path) == "search" && strings.HasSuffix(filepath.Dir(path), "api") {
+				dir := filepath.Dir(path)
+				newPath := filepath.Join(dir, serviceNameLower)
+				renameDirs = append(renameDirs, struct{ old, new string }{path, newPath})
+			} else if filepath.Base(path) == "searchv1connect" {
+				dir := filepath.Dir(path)
+				newPath := filepath.Join(dir, serviceNameLower+"v1connect")
+				renameDirs = append(renameDirs, struct{ old, new string }{path, newPath})
 			}
-
-			fmt.Printf("Renamed %s to %s\n", path, newPath)
+		} else {
+			// 找到 search.go 文件
+			if filepath.Base(path) == "search.go" {
+				dir := filepath.Dir(path)
+				newPath := filepath.Join(dir, fileName+".go")
+				renameFiles = append(renameFiles, struct{ old, new string }{path, newPath})
+			} else if strings.HasPrefix(filepath.Base(path), "search") {
+				dir := filepath.Dir(path)
+				newBaseName := strings.Replace(filepath.Base(path), "search", serviceNameLower, 1)
+				newPath := filepath.Join(dir, newBaseName)
+				renameFiles = append(renameFiles, struct{ old, new string }{path, newPath})
+			}
 		}
 
 		return nil
 	})
+
+	if err != nil {
+		return err
+	}
+
+	// 现在执行重命名 - 先文件后目录
+	for _, item := range renameFiles {
+		if err := os.Rename(item.old, item.new); err != nil {
+			return fmt.Errorf("failed to rename %s to %s: %w", item.old, item.new, err)
+		}
+		fmt.Printf("Renamed %s to %s\n", item.old, item.new)
+	}
+
+	// 然后重命名目录 - 先子目录后父目录
+	for i := len(renameDirs) - 1; i >= 0; i-- {
+		item := renameDirs[i]
+		if err := os.Rename(item.old, item.new); err != nil {
+			return fmt.Errorf("failed to rename directory %s to %s: %w", item.old, item.new, err)
+		}
+		fmt.Printf("Renamed directory %s to %s\n", item.old, item.new)
+	}
+
+	return nil
 }
 
 // createConstantsPackage 创建 constants 包
