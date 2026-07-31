@@ -1,211 +1,256 @@
-# go Connect Template CLI
+# co
 
-template: github.com/sunmery/connect-example-fast.git
+从 [`go-connect-template`](https://github.com/lens077/go-connect-template) 生成 ConnectRPC 微服务骨架的脚手架。
 
-- golang
-- sqlc
-- otel
-- connectrpc/connect
-- buf
-- protobuf
-- consul
+## 它是怎么工作的
 
-# Features
+模板本身是一份**所有能力都打开、能直接 `go build ./...` 通过**的参考实现。
+`co` 不改写模板,只做减法:
 
-- **Multiple Database Support**: MySQL, PostgreSQL, SQLite
-- **Cache Support**: Redis
-- **Search Engine Support**: Elasticsearch
-- **IAM Support**: Casdoor
-- **Build Tools**: Makefile, Taskfile
-- **Interactive TUI**: Choose options via interactive prompts or command line flags
+1. `git clone` 模板(浅克隆,带本地缓存)
+2. 按选择删掉未启用 feature 的文件、`+co:` 标记行、`go.mod` 里的直接依赖
+3. 生成一套以资源名命名的资源代码(proto + SQL + biz/data/service)
+4. 把新 provider 插进各 `fx.Module` 的锚点
+5. 跑 `sqlc generate` / `buf generate` / `go mod tidy`
 
-# Start
+减法比改写可靠:模板编译得过,裁剪后的结果就编译得过。模板会被它自己的 CI 编译,
+所以「生成的代码引用了不存在的 conf 字段」这类问题在源头就不成立。
 
-## Installation
+模板与 CLI 之间唯一的契约是模板仓库里的 `.co/manifest.yaml`。
+`co` 里不写死任何文件路径 —— 模板挪一个文件,改 manifest 即可,不必跟着发一版 CLI。
+
+### `+co:` 标记
+
+标记是各语言里合法的注释,所以模板照常编译。三种形式:
+
+```go
+var Module = fx.Provide(
+    NewData,
+    NewRedisClient,         // +co:redis
+    NewElasticSearchClient, // 全文检索 +co:elasticsearch
+    // +co:anchor data-providers
+)
+
+// +co:begin minio
+func NewMinioClient(...) { ... }
+// +co:end
+```
+
+- **行标记** `// +co:<feature>[,<feature>...]` —— feature 全开时只摘掉标记本身,
+  否则整行删掉。逗号是「与」。标记必须是行尾最后一个 token,前面的说明文字会保留。
+- **块标记** `// +co:begin <feature>` … `// +co:end` —— 可嵌套,`begin`/`end` 两行都会消失。
+- **锚点** `// +co:anchor <name>` —— 插入点,裁剪后**保留**,留给后续 `co resource add`。
+
+YAML / Makefile / Dockerfile / `.gitignore` 用 `#`,SQL 用 `--`,语义完全相同。
+`.proto` 刻意不参与裁剪:protoc 会把注释搬进生成的 Go 文件,标记的配对关系在那儿会断掉。
+
+## 安装
 
 ```shell
-go install
+go install github.com/lens077/co-cli@latest
 ```
 
-## Create New Project
-
-### Interactive Mode (Recommended)
-
-Simply run without any flags to use the interactive TUI:
+版本号可以用 ldflags 注入,不注入时退回 `debug.ReadBuildInfo()`:
 
 ```shell
-co new <service-name>
+go build -ldflags "-X github.com/lens077/co-cli/internal/cli.Version=v1.2.3" .
 ```
 
-You will be prompted to select:
-1. **Database**: mysql, postgres, sqlite, or none
-2. **Cache**: redis or none
-3. **Search Engine**: es (elasticsearch) or none
-4. **IAM**: casdoor or none
-5. **Build Tool**: Makefile or Taskfile
+## 命令
 
-### Command Line Mode
+| 命令 | 作用 |
+|---|---|
+| `co new <name>` | 生成一个新服务 |
+| `co resource add <name>` | 在已有服务里再加一套资源 |
+| `co proto add <path>` | 按约定布局新建一个 `.proto` |
+| `co proto server <path>` | 由已有 service 生成 Handler 骨架 |
+| `co doctor` | 检查 git / buf / sqlc / protoc 插件 |
+| `co version` | 打印版本 |
 
-Use command line flags for quick setup:
+### `co new`
 
 ```shell
-# Complete command line options
-co new <service-name> \
-  --database postgres \
-  --cache redis \
-  --search es \
-  --iam none \
-  --build makefile
+# 交互式:未指定的选项会弹表单
+co new cart
 
-# Mix and match with interactive prompts
-co new <service-name> --database mysql
+# 全命令行
+co new cart --module github.com/acme/shop --yes
+
+# 先看清楚会发生什么,再真跑
+co new cart --cache none --search none --dry-run
+
+# monorepo:服务落在 backend/services/cart,proto 抽到 backend/api/cart
+co new cart --layout monorepo --dir ~/src/ecommerce --module github.com/acme/ecommerce/backend
 ```
 
-## Command Line Options
+可选能力按组暴露成 flag,每组都可以传 `none`:
 
-| Option | Values | Description |
-|--------|--------|-------------|
-| `--database` | `mysql`, `postgres`, `sqlite`, `none` | Database type |
-| `--cache` | `redis`, `none` | Cache system |
-| `--search` | `es`, `none` | Search engine (Elasticsearch) |
-| `--iam` | `casdoor`, `none` | Identity and Access Management |
-| `--build` | `makefile`, `taskfile` | Build tool |
-| `--nomod` | - | Create service without go.mod (for monorepo) |
+| flag | 可选值 |
+|---|---|
+| `--database` | `postgres`(必选一个) |
+| `--cache` | `redis` |
+| `--search` | `elasticsearch` |
+| `--iam` | `casdoor` |
+| `--store` | `minio` |
+| `--discovery` | `consul` |
+| `--config-source` | `config-file`、`config-consul`、`config-configcenter`(可逗号分隔多选) |
 
-## Examples
+> mysql / sqlite 暂未提供。补充方式见模板 `.co/manifest.yaml` 里 `groups.database` 的注释。
 
-### Basic Service with PostgreSQL and Redis
+其它常用 flag:
+
+- `--keep-example` 保留模板自带的示例资源(默认整套删掉)
+- `--no-resource` 只出骨架,不生成资源代码
+- `--template-dir <path>` 用本地模板目录,完全跳过 clone —— 开发模板本身时用它
+- `--template-ref <branch|tag>` 钉住模板版本
+- `--no-cache` 忽略本地缓存重新 clone
+
+### `co resource add`
+
+在一个已经生成好的服务里再加一套资源。服务里没有 manifest(`.co/` 是模板的输入不是产物),
+所以「这个服务启用了哪些 feature」由 `co` 从文件与 `go.mod` 反推;判断不准时用 `--feature` 覆盖。
 
 ```shell
-co new user-service --database postgres --cache redis
+cd cart
+co resource add order
+buf generate            # 独立仓库
+# make api && make conf # monorepo:buf 必须在仓库根跑
+go build ./...
 ```
 
-### Monorepo Microservice with All Features
+生成的建表 DDL 落在 `internal/data/schema/000N_<表名>.sql`,序号接着服务里已有的 schema 往下排
+(`0001_carts.sql` → `0002_orders.sql`)。sqlc 按文件名排序读整个目录,序号就是建表顺序 ——
+新表引用老表时,排在前面会让外键建不起来。不带前缀的旧文件不参与计数(它在字典序里本来就
+排在所有 `000N_` 之后)。`queries/` 不加前缀:sqlc 读查询没有顺序语义。
+
+### `co proto`
+
+`proto add` 按 `<dir>/<name>/<version>/<name>.proto` 的布局新建文件,
+`package` 与 `go_package` 由路径和最近的 `go.mod` 推出。
+
+`proto server` 解析已有 service 生成 Handler 骨架,每个方法返回 `CodeUnimplemented`
+(不是 `panic` —— panic 会带走整个服务进程)。一元 / 客户端流 / 服务端流 / 双向流
+四种签名都会正确生成。
 
 ```shell
-co new cart-service --nomod --database postgres --cache redis --search es --iam casdoor --build makefile
+co proto add api/invoice/v1/invoice.proto
+buf generate --path api/invoice
+co proto server api/invoice/v1/invoice.proto
 ```
 
-### Simple Service with MySQL Only
+## 布局
 
-```shell
-co new product-service --database mysql --cache none --search none --iam none --build taskfile
-```
+| | `standalone` | `monorepo` |
+|---|---|---|
+| 服务目录 | 目标目录本身 | `backend/services/<name>/` |
+| proto | `api/<name>/v1/` | `backend/api/<name>/v1/` |
+| `go.mod` | 生成 | 不生成,用根仓库的 |
+| buf | `co` 代跑 | 需自己在仓库根 `make api && make conf` |
+| 配置数据源 | 按 `--config-source` | 同左,且强制带上 `config-configcenter` |
+| `internal/` 的导入前缀 | `<Module>` | `<Module>/services/<name>` |
+| `api/` 的导入前缀 | `<Module>/api` | `<Module>/api`(**不是** `<ServiceModule>/api`) |
 
-### Interactive Mode for All Options
+最后一行是 monorepo 唯一容易搞错的地方:proto 被搬出了服务目录,导入前缀就得跟着仓库根走。
+资源模板里的 `go_package` 也是这么拼的(`{{.Module}}/{{.APIDir}}`),两边必须一致 ——
+不一致的症状是模板自带的 proto(`api/config`、`--keep-example` 下的 `api/search`)导入
+`<ServiceModule>/api/...`,而文件实际在 `<Module>/api/...`,`go build` 报
+`no required module provides package`。`TestGenerateMonorepo` 会真编译一次来守住它。
 
-```shell
-co new order-service
-```
+`config-configcenter` 源要连一个 config-service。monorepo 里它就跑在同一个仓库,
+所以 `layouts.monorepo.features` 把这个 feature 强制打开(与用户的 `--config-source`
+取并集)。独立仓库也能显式选,只是得自己保证 `CONFIG_CENTER_ADDR` 指得到一个真实的
+config-service。
 
-## Advanced Usage
+它随身带的 `api/config/` 是 config-service 的契约副本,不是本服务自己的 API。
+monorepo 下这份契约整个仓库共用一份:`layouts.monorepo.shared_proto` 声明了 `config`,
+搬 proto 时若 `backend/api/config` 已经存在(生成第二个服务时必然如此),
+保留仓库里那份而不是用模板覆盖 —— 仓库里那份可能比模板新。
 
-### Monorepo Setup
-
-Create microservices without individual go.mod files:
-
-```shell
-co new path/to/service --nomod
-```
-
-Example for e-commerce monorepo:
-
-```shell
-co new ecommerce
-cd ecommerce
-
-co new application/user --nomod
-co new application/cart --nomod --database postgres --cache redis
-co new application/order --nomod --database mysql --search es
-```
-
-### Proto Management
-
-- **Add proto file**:
-```shell
-co proto add api/helloworld/demo.proto
-```
-
-- **Generate server API**:
-```shell
-co proto server api/user/v1/user.proto -t internal/service/
-```
-
-## Project Structure
-
-After creating a service, you'll get:
+## 生成出来的服务长什么样
 
 ```
-<service-name>/
-├── api/              # Generated from proto files
-├── cmd/              # Application entry points
-├── configs/          # Configuration files
+cart/
+├── api/cart/v1/            # proto 与 buf 生成物
+├── cmd/server/             # 入口
+├── configs/                # dev.yml / pre.yml
 ├── internal/
-│   ├── biz/          # Business logic layer
-│   ├── data/         # Data access layer
-│   ├── server/       # Server setup
-│   └── service/      # Service implementations
-├── pkg/              # Internal packages
-├── third_party/      # Third-party dependencies
-├── Makefile          # Build tasks
-└── go.mod            # Go module file
+│   ├── biz/                # 领域逻辑
+│   ├── conf/               # 配置结构(由 conf.proto 生成)
+│   ├── data/               # 仓储实现 + schema/ + queries/ + models/(sqlc)
+│   ├── pkg/                # config / registry / otel / dbutil / money / minio
+│   ├── server/             # HTTP + Connect handler 注册
+│   └── service/            # Connect handler
+├── constants/
+├── deploy/
+├── Makefile
+└── go.mod
 ```
 
-## Configuration
+`make dev` 用 `CONFIG_SOURCE=file` 起服务,不依赖 Consul 等外部组件。
 
-Edit `configs/dev.yml` to customize:
+## 目录结构
 
-```yaml
-server:
-  addr: "0.0.0.0:30000"
-
-data:
-  database:
-    postgres:  # or mysql, sqlite
-      host: "localhost"
-      port: 5432
-  cache:
-    redis:
-      host: "localhost"
-      port: 6379
-  search:
-    elasticsearch:
-      addresses:
-        - "http://localhost:9200"
-  auth:
-    casdoor:
-      endpoint: "http://localhost:8000"
+```
+co-cli/
+├── main.go                 # 只调 cli.Execute()
+└── internal/
+    ├── cli/                # cobra 命令,只做参数绑定,无业务逻辑
+    ├── ui/                 # huh 表单 + lipgloss 输出
+    ├── manifest/           # 解析 .co/manifest.yaml、feature 选择与校验
+    ├── protogen/           # proto 解析(go-protoparser)、骨架与 handler 生成
+    ├── resource/           # 命名推导 + 从 .co/scaffold/resource 渲染资源
+    └── scaffold/           # 引擎
+        ├── fetch.go        # go-git 浅克隆 + 缓存
+        ├── plan.go         # feature 集合 -> 有序操作清单(可 --dry-run 打印)
+        ├── apply.go        # 执行:拷贝 / 删除 / overlay / 裁剪 / 锚点插入 / hook
+        ├── addresource.go  # co resource add 的清单与执行
+        ├── marker.go       # +co: 行与块的裁剪
+        ├── gomod.go        # x/mod/modfile 改 module 与 DropRequire
+        ├── detect.go       # 从已生成的服务反推 feature
+        └── rewrite.go      # 模块路径替换
 ```
 
-## Development
+「算清单」与「执行清单」是分开的:生成结果不对时,先看 `--dry-run` 就能判断
+是选型算错了还是执行环节出了问题。
 
-### Run Locally
+## 开发
 
 ```shell
-# Using Makefile
-make run
+# 单元测试:不联网、不落盘
+go test -short ./...
 
-# Using Taskfile
-task run
+# 完整测试:生成矩阵会真的生成项目并跑 go build ./...
+CO_TEMPLATE_DIR=../go-connect-template go test ./...
 ```
 
-### Build
+`CO_TEMPLATE_DIR` 不设时默认按并排 checkout 猜(`../../../go-connect-template`),
+找不到就跳过相关测试。
+
+两种布局各有一格真生成 + 真编译的测试:
+
+- `TestGenerateMatrix` —— standalone,把 feature 组合矩阵跑一遍,每格 `go build ./...`
+- `TestGenerateMonorepo` —— 生成 `cart` + `order` 两个服务,补出仓库根(`go.mod` / `buf.*` /
+  `third_party`)后在根上跑 buf 再整体编译。**monorepo 必须真编译**,因为它和 standalone
+  唯一实质不同的地方是导入路径,而路径错只有编译才看得出来
+
+改完模板不必先 push:
 
 ```shell
-# Using Makefile
-make build
-
-# Using Taskfile
-task build
+co new demo --template-dir ../go-connect-template --module github.com/acme/demo --yes
 ```
 
-### Test
+改造记录、已知问题与未做项见 [`TODO.md`](TODO.md)。
 
-```shell
-# Using Makefile
-make test
+## 用到的库
 
-# Using Taskfile
-task test
-```
-
+| 用途 | 库 |
+|---|---|
+| 命令 | `spf13/cobra` |
+| 交互表单 | `charmbracelet/huh` |
+| 终端输出 | `charmbracelet/lipgloss` |
+| clone | `go-git/go-git/v5` |
+| `go.mod` | `golang.org/x/mod/modfile` |
+| manifest | `gopkg.in/yaml.v3` |
+| proto 解析 | `yoheimuta/go-protoparser/v4` |
+| 复数推导 | `gertd/go-pluralize` |
+| 测试 | `stretchr/testify` |
