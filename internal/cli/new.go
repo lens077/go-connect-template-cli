@@ -236,14 +236,51 @@ func printNextSteps(p *ui.Printer, plan *scaffold.Plan) {
 		rel = svc
 	}
 
-	p.Dim("\n下一步:")
-	p.Command("cd " + rel)
+	steps := []step{{cmd: "cd " + rel}}
 	if plan.Layout.Name == "monorepo" {
 		// monorepo 的 buf 必须在仓库根跑,co 代跑不了,只能让用户自己来
-		p.Command("make api && make conf   # proto 在仓库根统一生成")
+		steps = append(steps, step{"make api && make conf", "proto 在仓库根统一生成"})
 	}
-	p.Command("go build ./...")
-	p.Command("make dev                  # CONFIG_SOURCE=file,不依赖外部组件")
+	steps = append(steps, step{cmd: "go build ./..."})
+
+	// make dev 只是不走配置中心,不等于不接外部组件:postgres 这类硬依赖
+	// 连不上时服务在启动健康检查那一步就退出了。不在这里把要起的容器列清楚,
+	// 用户看到的会是一条 fx 的依赖注入错误 —— 第一行是「could not build
+	// arguments for main.NewApp.func3」,真正的原因埋在第四层嵌套里。
+	for _, d := range plan.DevDependencies() {
+		// 只区分「不起就起不来」和「可以先不起」。可选项不起来的后果各不相同
+		// (ES 是 /healthz 变红,consul 是 make dev 根本不连它),CLI 说不准,
+		// 说错了比不说更糟 —— 让用户按需去看该组件的文档。
+		note := "必需"
+		if !d.Required {
+			note = "可选"
+		}
+		steps = append(steps, step{"docker compose -f " + scaffold.ToSlash(d.Compose) + " up -d", note})
+	}
+	steps = append(steps, step{"make dev", "从 configs/dev.yml 读整份配置,不走配置中心"})
+
+	p.Dim("\n下一步:")
+	printSteps(p, steps)
+}
+
+// step 是「下一步」里的一条命令,note 非空时以 # 注释跟在后面。
+type step struct{ cmd, note string }
+
+// printSteps 打印命令列表,把注释对齐到同一列。
+func printSteps(p *ui.Printer, steps []step) {
+	width := 0
+	for _, s := range steps {
+		if s.note != "" && len(s.cmd) > width {
+			width = len(s.cmd)
+		}
+	}
+	for _, s := range steps {
+		if s.note == "" {
+			p.Command(s.cmd)
+			continue
+		}
+		p.Command(fmt.Sprintf("%-*s   # %s", width, s.cmd, s.note))
+	}
 }
 
 func mustCwd() string {

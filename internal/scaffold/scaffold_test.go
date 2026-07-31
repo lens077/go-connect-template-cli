@@ -183,6 +183,53 @@ func TestPlanLayoutForcedFeatures(t *testing.T) {
 	}
 }
 
+// TestPlanDevDependencies 盯住生成后打给用户的那份「先起这些容器」清单。
+//
+// 两件事必须成立:清单里的 compose 文件在生成物里真的存在(不能指着一个
+// 被裁掉的路径),以及硬依赖排在可选依赖前面 —— 用户会照着从上往下敲。
+func TestPlanDevDependencies(t *testing.T) {
+	src, m := templateSource(t)
+
+	newPlan := func(features ...string) *Plan {
+		p, err := NewPlan(src, m, Options{
+			Name:     "cart",
+			Module:   "github.com/acme/shop",
+			Dest:     t.TempDir(),
+			Layout:   "standalone",
+			Features: features,
+		})
+		require.NoError(t, err)
+		return p
+	}
+
+	t.Run("只列启用了的 feature", func(t *testing.T) {
+		deps := newPlan("postgres", "redis").DevDependencies()
+		require.NotEmpty(t, deps, "postgres 至少要声明一个 dev_compose")
+
+		var required, optional int
+		for _, d := range deps {
+			assert.True(t, m.Features[d.Feature].DevCompose != "", "%s 没声明 dev_compose", d.Feature)
+			assert.NotEqual(t, "elasticsearch", d.Feature, "没启用的 feature 不该出现在清单里")
+			if d.Required {
+				required++
+				assert.Zero(t, optional, "硬依赖必须排在可选依赖前面")
+			} else {
+				optional++
+			}
+		}
+		assert.NotZero(t, required, "postgres/redis 是启动硬依赖")
+	})
+
+	t.Run("compose 文件不能被裁掉", func(t *testing.T) {
+		p := newPlan("postgres", "redis", "elasticsearch", "consul")
+		for _, d := range p.DevDependencies() {
+			assert.NotContains(t, p.Deletes, d.Compose, "%s 的 compose 被删了却还在清单里", d.Feature)
+			_, err := os.Stat(filepath.Join(src.Root, filepath.FromSlash(d.Compose)))
+			assert.NoError(t, err, "%s 的 dev_compose 在模板里不存在", d.Feature)
+		}
+	})
+}
+
 func TestPlanRejects(t *testing.T) {
 	src, m := templateSource(t)
 	base := Options{Name: "cart", Module: "github.com/acme/shop", Layout: "standalone", Features: []string{"postgres"}}

@@ -75,6 +75,15 @@ type Feature struct {
 	// Requires 是未启用时从 go.mod 里 DropRequire 的直接依赖。
 	// 间接依赖交给 go mod tidy,不在这里枚举。
 	Requires []string `yaml:"requires"`
+	// DevCompose 是本 feature 对应的本地依赖 compose 文件(相对服务目录),
+	// 空表示这个 feature 不需要本地跑任何东西。
+	//
+	// 生成结束后的「下一步」按它列出 make dev 之前要起的组件。这个信息只能
+	// 由模板给:哪些 feature 连的是外部组件、compose 文件叫什么,CLI 无从知道。
+	DevCompose string `yaml:"dev_compose"`
+	// DevRequired 表示服务在启动阶段硬依赖它,连不上就起不来(postgres 是这样)。
+	// false 表示可降级:连不上只在 /healthz 里显示成不健康,服务照常启动。
+	DevRequired bool `yaml:"dev_required"`
 }
 
 // Group 是一组互斥或并列的 feature,对应交互表单里的一个问题。
@@ -229,6 +238,12 @@ func (m *Manifest) validate() error {
 			if _, ok := m.Features[need]; !ok {
 				return fmt.Errorf("feature %q: needs unknown feature %q", f.Name, need)
 			}
+		}
+		// dev_required 单独出现是写漏了 dev_compose:它只用来给那个 compose
+		// 文件标「必需」,没有文件时这个字段不产生任何效果,静默忽略等于
+		// 「下一步」里少列一个启动前必须起来的组件
+		if f.DevRequired && f.DevCompose == "" {
+			return fmt.Errorf("feature %q: dev_required needs dev_compose", f.Name)
 		}
 	}
 

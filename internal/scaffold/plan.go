@@ -319,6 +319,40 @@ func (p *Plan) Data() TemplateData {
 	}
 }
 
+// DevDependency 是一个要在本地跑起来的外部组件。
+type DevDependency struct {
+	// Feature 声明它的 feature 名
+	Feature string
+	// Compose compose 文件路径,相对服务目录
+	Compose string
+	// Required 为 true 表示服务启动阶段硬依赖它,连不上就起不来
+	Required bool
+}
+
+// DevDependencies 列出已启用的 feature 声明的本地依赖,必需的排在前面。
+//
+// 用在生成结束后的「下一步」里。少了这份清单,用户照着提示直接 make dev
+// 会撞上一条 fx 的依赖注入错误 —— 那个报错的第一行是 "could not build
+// arguments for function main.NewApp.func3",真正的原因("连不上 5432")
+// 埋在第四层嵌套里。
+func (p *Plan) DevDependencies() []DevDependency {
+	var out []DevDependency
+	for _, name := range p.Features.Names() {
+		f, ok := p.Manifest.Features[name]
+		if !ok || f.DevCompose == "" {
+			continue
+		}
+		out = append(out, DevDependency{
+			Feature:  name,
+			Compose:  f.DevCompose,
+			Required: f.DevRequired,
+		})
+	}
+	// 必需的排前面,组内保持 Names() 的字典序(稳定,便于测试)
+	sort.SliceStable(out, func(i, j int) bool { return out[i].Required && !out[j].Required })
+	return out
+}
+
 // Describe 打印操作清单,供 --dry-run 使用。
 func (p *Plan) Describe(w io.Writer) {
 	fmt.Fprintf(w, "template   %s\n", p.Source)

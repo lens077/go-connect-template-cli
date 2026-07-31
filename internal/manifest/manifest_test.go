@@ -344,6 +344,21 @@ hooks:
 `,
 			wantErr: `unknown layout "ghost"`,
 		},
+		{
+			// dev_required 单独出现不产生任何效果,而它想表达的是
+			// 「这个组件不起服务就起不来」—— 静默忽略等于生成后的提示里少一条
+			name: "dev_required 没配 dev_compose",
+			yaml: `version: 1
+module: m
+features:
+  a: {group: g, dev_required: true}
+groups:
+  g: {members: [a]}
+layouts:
+  standalone: {service_dir: ".", proto_dir: api, service_module: m}
+`,
+			wantErr: "dev_required needs dev_compose",
+		},
 	}
 
 	for _, tc := range cases {

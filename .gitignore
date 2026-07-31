@@ -1,6 +1,3 @@
 # Binaries
 co
 co-cli
-
-# Exception: keep cmd/co directory
-!cmd/co/
