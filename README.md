@@ -63,6 +63,7 @@ go build -ldflags "-X github.com/lens077/co-cli/internal/cli.Version=v1.2.3" .
 | `co new <name>` | 生成一个新服务 |
 | `co resource add <name>` | 在已有服务里再加一套资源 |
 | `co proto add <path>` | 按约定布局新建一个 `.proto` |
+| `co proto gen <path> -t <dir>` | 按已有 proto 生成 service/biz/data 三层示例 |
 | `co proto server <path>` | 由已有 service 生成 Handler 骨架 |
 | `co doctor` | 检查 git / buf / sqlc / protoc 插件 |
 | `co version` | 打印版本 |
@@ -93,7 +94,7 @@ co new cart --layout monorepo --dir ~/src/ecommerce --module github.com/acme/eco
 | `--iam` | `casdoor` |
 | `--store` | `minio` |
 | `--discovery` | `consul` |
-| `--config-source` | `config-file`、`config-consul`、`config-configcenter`(可逗号分隔多选) |
+| `--config-source` | `config-file`、`config-configcenter`(可逗号分隔多选) |
 
 > mysql / sqlite 暂未提供。补充方式见模板 `.co/manifest.yaml` 里 `groups.database` 的注释。
 
@@ -128,14 +129,34 @@ go build ./...
 `proto add` 按 `<dir>/<name>/<version>/<name>.proto` 的布局新建文件,
 `package` 与 `go_package` 由路径和最近的 `go.mod` 推出。
 
-`proto server` 解析已有 service 生成 Handler 骨架,每个方法返回 `CodeUnimplemented`
+`proto gen` 解析已有 service 与同文件 message,在 `-t` 指定的服务目录写出三层示例:
+
+- `internal/service/<name>.go` — Connect handler,把 proto 译成 biz 再调 UseCase
+- `internal/biz/<name>.go` — 领域结构体、Repo 接口、UseCase(方法与 rpc 一一对应)
+- `internal/data/<name>.go` — Repo 占位实现,返回 `not implemented`,留给 sqlc
+
+形状对齐 `ecommerce/backend/services/cart`:service 只做翻译,biz 不认 protobuf。
+流式 rpc 只在 service 层生成 `Unimplemented`,不进 biz/data。普通 `oneof`、导入的业务
+message 与尚未映射的 WKT 会快速失败,不会生成一套看似完成但编译不过的代码。
+默认把 `NewXxx` 插进各 `fx.Module` 的 `+co:anchor`(与 `co new` 产物一致);
+目标目录没有锚点时跳过接线并警告,三个文件照样写。
+
+`proto server` 只生成 Handler 骨架,每个方法返回 `CodeUnimplemented`
 (不是 `panic` —— panic 会带走整个服务进程)。一元 / 客户端流 / 服务端流 / 双向流
 四种签名都会正确生成。
 
 ```shell
 co proto add api/invoice/v1/invoice.proto
 buf generate --path api/invoice
+co proto gen api/invoice/v1/invoice.proto -t .
+# 或只出 handler:
 co proto server api/invoice/v1/invoice.proto
+```
+
+monorepo 下 `-t` 指向服务目录:
+
+```shell
+co proto gen api/merchant/v1/merchant.proto -t services/merchant/
 ```
 
 ## 布局
@@ -152,19 +173,16 @@ co proto server api/invoice/v1/invoice.proto
 
 最后一行是 monorepo 唯一容易搞错的地方:proto 被搬出了服务目录,导入前缀就得跟着仓库根走。
 资源模板里的 `go_package` 也是这么拼的(`{{.Module}}/{{.APIDir}}`),两边必须一致 ——
-不一致的症状是模板自带的 proto(`api/config`、`--keep-example` 下的 `api/search`)导入
+不一致的症状是模板自带的 proto(`--keep-example` 下的 `api/search`)导入
 `<ServiceModule>/api/...`,而文件实际在 `<Module>/api/...`,`go build` 报
 `no required module provides package`。`TestGenerateMonorepo` 会真编译一次来守住它。
 
-`config-configcenter` 源要连一个 config-service。monorepo 里它就跑在同一个仓库,
-所以 `layouts.monorepo.features` 把这个 feature 强制打开(与用户的 `--config-source`
-取并集)。独立仓库也能显式选,只是得自己保证 `CONFIG_CENTER_ADDR` 指得到一个真实的
-config-service。
+`config-configcenter` 源经 `github.com/lens077/config-center` SDK 连配置中心。
+monorepo 里它就跑在同一个仓库,所以 `layouts.monorepo.features` 把这个 feature
+强制打开(与用户的 `--config-source` 取并集)。独立仓库默认也带上,本地仍可用
+`CONFIG_SOURCE=file`;生产挂 `CONFIG_SOURCE_FILE` 指向 `type: config_center` 的 selector。
 
-它随身带的 `api/config/` 是 config-service 的契约副本,不是本服务自己的 API。
-monorepo 下这份契约整个仓库共用一份:`layouts.monorepo.shared_proto` 声明了 `config`,
-搬 proto 时若 `backend/api/config` 已经存在(生成第二个服务时必然如此),
-保留仓库里那份而不是用模板覆盖 —— 仓库里那份可能比模板新。
+契约 proto 由 SDK 携带,生成物不再复制 `api/config/`。
 
 ## 生成出来的服务长什么样
 
@@ -197,7 +215,7 @@ co-cli/
     ├── cli/                # cobra 命令,只做参数绑定,无业务逻辑
     ├── ui/                 # huh 表单 + lipgloss 输出
     ├── manifest/           # 解析 .co/manifest.yaml、feature 选择与校验
-    ├── protogen/           # proto 解析(go-protoparser)、骨架与 handler 生成
+    ├── protogen/           # proto 解析(go-protoparser)、骨架、handler、三层示例生成
     ├── resource/           # 命名推导 + 从 .co/scaffold/resource 渲染资源
     └── scaffold/           # 引擎
         ├── fetch.go        # go-git 浅克隆 + 缓存

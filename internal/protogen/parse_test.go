@@ -45,8 +45,8 @@ func TestParseFile(t *testing.T) {
 	require.Len(t, f.Services, 1)
 	assert.Equal(t, "OrderService", f.Services[0].Name)
 	assert.Equal(t, []Method{
-		{Name: "CreateOrder", Request: "CreateOrderRequest", Response: "CreateOrderReply"},
-		{Name: "GetOrder", Request: "GetOrderRequest", Response: "GetOrderReply"},
+		{Name: "CreateOrder", Request: "CreateOrderRequest", Response: "CreateOrderReply", RequestType: "CreateOrderRequest", ResponseType: "CreateOrderReply"},
+		{Name: "GetOrder", Request: "GetOrderRequest", Response: "GetOrderReply", RequestType: "GetOrderRequest", ResponseType: "GetOrderReply"},
 	}, f.Services[0].Methods)
 }
 
@@ -101,10 +101,10 @@ service ChatService {
 	svc, err := f.Service("")
 	require.NoError(t, err)
 	assert.Equal(t, []Method{
-		{Name: "Unary", Request: "Req", Response: "Rep"},
-		{Name: "Upload", Request: "Req", Response: "Rep", ClientStream: true},
-		{Name: "Watch", Request: "Req", Response: "Rep", ServerStream: true},
-		{Name: "Session", Request: "Req", Response: "Rep", ClientStream: true, ServerStream: true},
+		{Name: "Unary", Request: "Req", Response: "Rep", RequestType: "Req", ResponseType: "Rep"},
+		{Name: "Upload", Request: "Req", Response: "Rep", RequestType: "Req", ResponseType: "Rep", ClientStream: true},
+		{Name: "Watch", Request: "Req", Response: "Rep", RequestType: "Req", ResponseType: "Rep", ServerStream: true},
+		{Name: "Session", Request: "Req", Response: "Rep", RequestType: "Req", ResponseType: "Rep", ClientStream: true, ServerStream: true},
 	}, svc.Methods)
 }
 

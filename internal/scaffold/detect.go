@@ -97,11 +97,9 @@ type ServiceInfo struct {
 	APIRoot string
 }
 
-// InspectService 从服务目录反推 module 与 api/ 的位置。
-//
-// 往上找 go.mod 而不是要求用户传 --module:standalone 下 go.mod 就在服务目录里,
-// monorepo 下在仓库根,两种情况用同一套逻辑就能覆盖,用户什么都不用记。
-func InspectService(dir string) (ServiceInfo, error) {
+// InspectTarget 从服务目录反推 module 路径,不要求 api/ 存在。
+// co proto gen 只需要知道 internal/ 的导入前缀,proto 文件本身已经在手边。
+func InspectTarget(dir string) (ServiceInfo, error) {
 	root, err := filepath.Abs(dir)
 	if err != nil {
 		return ServiceInfo{}, err
@@ -126,15 +124,14 @@ func InspectService(dir string) (ServiceInfo, error) {
 		serviceModule = mod + "/" + ToSlash(rel)
 	}
 
-	// api/ 要么在服务目录里(standalone),要么被抽到了 module 根下(monorepo)。
-	// 两处都找不到就报错,而不是默默生成到服务目录里 —— 那样 proto 会散落两处。
 	apiRoot := filepath.Join(root, "api")
 	if _, serr := os.Stat(apiRoot); serr != nil {
 		alt := filepath.Join(modRoot, "api")
-		if _, aerr := os.Stat(alt); aerr != nil {
-			return ServiceInfo{}, fmt.Errorf("cannot locate api/ under %s or %s", root, modRoot)
+		if _, aerr := os.Stat(alt); aerr == nil {
+			apiRoot = alt
+		} else {
+			apiRoot = ""
 		}
-		apiRoot = alt
 	}
 
 	return ServiceInfo{
@@ -144,6 +141,21 @@ func InspectService(dir string) (ServiceInfo, error) {
 		ModuleRoot:    modRoot,
 		APIRoot:       apiRoot,
 	}, nil
+}
+
+// InspectService 从服务目录反推 module 与 api/ 的位置。
+//
+// 往上找 go.mod 而不是要求用户传 --module:standalone 下 go.mod 就在服务目录里,
+// monorepo 下在仓库根,两种情况用同一套逻辑就能覆盖,用户什么都不用记。
+func InspectService(dir string) (ServiceInfo, error) {
+	info, err := InspectTarget(dir)
+	if err != nil {
+		return ServiceInfo{}, err
+	}
+	if info.APIRoot == "" {
+		return ServiceInfo{}, fmt.Errorf("cannot locate api/ under %s or %s", info.Root, info.ModuleRoot)
+	}
+	return info, nil
 }
 
 func findModuleRoot(start string) (string, error) {

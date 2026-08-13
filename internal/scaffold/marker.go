@@ -203,11 +203,17 @@ func stripLineMarker(text, prefix string) string {
 }
 
 // InsertAtAnchor 在锚点行之前插入一段文本,缩进对齐锚点行。
-// 锚点本身保留在原处,所以同一个锚点可以被反复插入,顺序即插入顺序。
+// 锚点本身保留在原处,所以同一个锚点可以插入不同内容;完全相同的内容只插一次。
 func InsertAtAnchor(path, content, anchor, text string) (string, error) {
+	next, _, err := InsertAtAnchorOnce(path, content, anchor, text)
+	return next, err
+}
+
+// InsertAtAnchorOnce 与 InsertAtAnchor 相同,并额外报告这次是否真的插入了内容。
+func InsertAtAnchorOnce(path, content, anchor, text string) (string, bool, error) {
 	prefix := commentPrefixFor(path)
 	if prefix == "" {
-		return "", fmt.Errorf("%s: unknown comment syntax, cannot insert at anchor %q", path, anchor)
+		return "", false, fmt.Errorf("%s: unknown comment syntax, cannot insert at anchor %q", path, anchor)
 	}
 	want := prefix + " " + anchorToken + " " + anchor
 
@@ -226,15 +232,37 @@ func InsertAtAnchor(path, content, anchor, text string) (string, error) {
 			}
 			block = append(block, line{text: indent + t, eol: ln.eol})
 		}
+		if containsLineBlock(lines[:i], block) {
+			return content, false, nil
+		}
 
 		out := make([]line, 0, len(lines)+len(block))
 		out = append(out, lines[:i]...)
 		out = append(out, block...)
 		out = append(out, lines[i:]...)
-		return joinLines(out), nil
+		return joinLines(out), true, nil
 	}
 
-	return "", fmt.Errorf("%s: anchor %q not found", path, anchor)
+	return "", false, fmt.Errorf("%s: anchor %q not found", path, anchor)
+}
+
+func containsLineBlock(lines, block []line) bool {
+	if len(block) == 0 || len(block) > len(lines) {
+		return false
+	}
+	for i := 0; i <= len(lines)-len(block); i++ {
+		match := true
+		for j := range block {
+			if lines[i+j].text != block[j].text {
+				match = false
+				break
+			}
+		}
+		if match {
+			return true
+		}
+	}
+	return false
 }
 
 // line 保留每行原本的行尾符,使裁剪不改变文件的换行风格。

@@ -61,8 +61,8 @@ internal/
 
 - [x] `standalone` / `monorepo` 两种布局,差异全部由 manifest 的 `layouts.*` 描述
 - [x] `layouts.<name>.features`:布局强制启用的 feature,与用户选择取并集。monorepo 用它强制打开
-      `config-configcenter` —— 否则 `source.go` 里那段分支会被裁掉,而 monorepo 的默认
-      `CONFIG_SOURCE` 正指着它,生成出来的服务一起动就报 unknown config source
+      `config-configcenter` —— 否则 `source_sdk.go` 会被裁掉,而 monorepo 的生产路径
+      正是 `CONFIG_SOURCE_FILE`
 - [x] `layouts.<name>.shared_proto`:声明整个仓库共用的 proto 子树。搬 proto 时目标已存在就保留
       仓库里那份(它可能比模板新),而不是报冲突 —— 同一个 monorepo 里生成第二个服务时必然如此
 - [x] overlay 目录结构即目标路径,渲染后去掉 `.tmpl` 后缀写进 `service_dir`
@@ -92,8 +92,8 @@ protovalidate 对空字段返回 `invalid_argument` 带 `buf.validate.Violations
       `no required module provides package <Module>/services/cart/api/config/v1`
 - [x] 根因:`applyRenames` 把模板 module 一律替换成 `ServiceModule`,但 `api/` 那棵树会被
       `relocateProto` 搬到仓库根,导入前缀必须跟着仓库根走(`<Module>/api`)。服务自己生成的
-      proto 没事(资源模板直接拼 `{{.Module}}/{{.APIDir}}`),但模板自带的 `api/config`
-      (以及 `--keep-example` 下的 `api/search`)就对不上了
+      proto 没事(资源模板直接拼 `{{.Module}}/{{.APIDir}}`),但模板自带的 `--keep-example`
+      下的 `api/search` 就对不上了
 - [x] 修法(`internal/scaffold/apply.go`):改成**有序**两条替换规则,第一条先吃掉 `api/` 前缀
 
       ```go
@@ -139,6 +139,19 @@ protovalidate 对空字段返回 `invalid_argument` 带 `buf.validate.Violations
       monorepo 单独一格(真编译)、标记裁剪残留检查、`resource add`
 - [x] `resource`:命名推导、schema 序号推导
 - [x] `protogen`:proto 方法提取(一元 / 客户端流 / 服务端流 / 双向流四种签名)
+
+### 11. `co proto gen`
+
+- [x] 已有 proto 时不再只能出 Unimplemented handler:`co proto gen <proto> -t <service-dir>`
+      写出 service/biz/data 三层示例,形状对齐 cart(service 只翻译、biz 不认 protobuf、
+      data 接 `*Data` + logger,方法体留 `not implemented` 给 sqlc)
+- [x] 解析补上 message / field / enum / map / oneof / proto3 optional,以及
+      Timestamp / Duration / Struct / wrappers / Empty 的类型映射
+- [x] 默认往 `+co:anchor` 插 NewXxx;没有锚点时跳过并警告,不让整条命令失败
+- [x] 流式 rpc 只在 service 层生成 Unimplemented,不进 biz/data
+- [x] 普通 oneof、导入的业务 message、未映射 WKT 快速失败;写文件前先检查三层冲突,
+      避免留下半套生成物
+- [x] 模板无需改动:锚点与三层目录是 `co new` 产物的既有契约
 
 ```
 gofmt ✓   go build ✓   go vet ✓   go test ./... ✓(完整,非 -short)

@@ -205,6 +205,15 @@ func TestInsertAtAnchor(t *testing.T) {
 		assert.Contains(t, twice, "+co:anchor data-providers")
 	})
 
+	t.Run("相同内容重复插入时保持幂等", func(t *testing.T) {
+		once, err := InsertAtAnchor("x.go", src, "data-providers", "NewCartRepo,")
+		require.NoError(t, err)
+		twice, inserted, err := InsertAtAnchorOnce("x.go", once, "data-providers", "NewCartRepo,")
+		require.NoError(t, err)
+		assert.False(t, inserted)
+		assert.Equal(t, once, twice)
+	})
+
 	t.Run("多行插入每行都对齐", func(t *testing.T) {
 		got, err := InsertAtAnchor("x.go", src, "data-providers", "A,\nB,")
 		require.NoError(t, err)
