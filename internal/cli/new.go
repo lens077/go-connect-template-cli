@@ -51,7 +51,6 @@ type newOptions struct {
 	dockerRegistry  string
 	dockerNamespace string
 	consulAddr      string
-	consulKVPrefix  string
 }
 
 func newNewCmd() *cobra.Command {
@@ -88,7 +87,6 @@ func newNewCmd() *cobra.Command {
 	f.StringVar(&o.dockerRegistry, "docker-registry", "ccr.ccs.tencentyun.com", "镜像仓库地址(monorepo)")
 	f.StringVar(&o.dockerNamespace, "docker-namespace", "sumery", "镜像命名空间(monorepo)")
 	f.StringVar(&o.consulAddr, "consul-addr", "consul.app.com", "服务注册用的 Consul 地址(monorepo)")
-	f.StringVar(&o.consulKVPrefix, "consul-kv-prefix", "ecommerce", "Consul KV 里配置的路径前缀(monorepo)")
 
 	// 分组 flag 的值不绑到结构体上,统一由 collectPresets 从 cmd.Flags() 读:
 	// 它要区分「传了 none」和「没传」,而这个区别只有 Flags().Changed() 知道
@@ -174,7 +172,6 @@ func runNew(cmd *cobra.Command, name string, o *newOptions) error {
 		DockerRegistry:  o.dockerRegistry,
 		DockerNamespace: o.dockerNamespace,
 		ConsulAddr:      o.consulAddr,
-		ConsulKVPrefix:  o.consulKVPrefix,
 	})
 	if err != nil {
 		return err

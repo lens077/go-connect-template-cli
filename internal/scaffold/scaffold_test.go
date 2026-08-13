@@ -52,7 +52,7 @@ type combo struct {
 var matrix = []combo{
 	{
 		name:     "full",
-		features: []string{"postgres", "redis", "elasticsearch", "casdoor", "minio", "consul", "config-consul", "config-file"},
+		features: []string{"postgres", "redis", "elasticsearch", "casdoor", "minio", "consul", "config-configcenter", "config-file"},
 	},
 	{
 		name:     "minimal",
@@ -60,30 +60,30 @@ var matrix = []combo{
 	},
 	{
 		name:     "no-cache",
-		features: []string{"postgres", "elasticsearch", "casdoor", "minio", "consul", "config-consul"},
+		features: []string{"postgres", "elasticsearch", "casdoor", "minio", "consul", "config-configcenter"},
 	},
 	{
 		name:     "no-search",
-		features: []string{"postgres", "redis", "casdoor", "minio", "consul", "config-consul"},
+		features: []string{"postgres", "redis", "casdoor", "minio", "consul", "config-configcenter"},
 	},
 	{
 		name:     "no-iam",
-		features: []string{"postgres", "redis", "elasticsearch", "minio", "consul", "config-consul"},
+		features: []string{"postgres", "redis", "elasticsearch", "minio", "consul", "config-configcenter"},
 	},
 	{
 		name:     "no-store",
-		features: []string{"postgres", "redis", "elasticsearch", "casdoor", "consul", "config-consul"},
+		features: []string{"postgres", "redis", "elasticsearch", "casdoor", "consul", "config-configcenter"},
 	},
 	{
 		name:     "keep-example",
-		features: []string{"postgres", "redis", "elasticsearch", "casdoor", "minio", "consul", "config-consul"},
+		features: []string{"postgres", "redis", "elasticsearch", "casdoor", "minio", "consul", "config-configcenter"},
 		opts:     func(o *Options) { o.KeepExample = true },
 	},
 	{
 		// 一个 handler 都不注册的骨架。这一格专门守着 server.go 里那个
 		// handlerOptions:写成局部变量的话,未使用的局部变量会让它编译不过。
 		name:     "no-resource",
-		features: []string{"postgres", "redis", "consul", "config-consul"},
+		features: []string{"postgres", "redis", "consul", "config-configcenter"},
 		opts:     func(o *Options) { o.NoResource = true },
 	},
 }
@@ -149,8 +149,7 @@ func TestPlanMatrix(t *testing.T) {
 
 // TestPlanLayoutForcedFeatures 盯住 layouts.<name>.features:
 // 用户没选 config-configcenter,monorepo 也必须替他打开 —— 否则
-// source.go 里那段 configcenter 分支会被裁掉,而 monorepo 的默认
-// CONFIG_SOURCE 正指着它,生成出来的服务一起动就报 unknown config source。
+// source_sdk.go 会被裁掉,而 monorepo 的生产路径正是 CONFIG_SOURCE_FILE。
 func TestPlanLayoutForcedFeatures(t *testing.T) {
 	src, m := templateSource(t)
 
@@ -180,6 +179,22 @@ func TestPlanLayoutForcedFeatures(t *testing.T) {
 	require.NoError(t, err)
 	for _, f := range forced {
 		assert.False(t, sp.Features.Has(f), "standalone 不该替用户打开 %s", f)
+	}
+
+	require.NoError(t, Apply(context.Background(), sp, nil))
+	standalone := filepath.Join(sp.Dest, sp.ServiceDir)
+	for _, path := range []string{
+		"configs/source.dev.yaml.example",
+		"internal/pkg/config/source_sdk.go",
+	} {
+		_, err := os.Stat(filepath.Join(standalone, path))
+		assert.True(t, os.IsNotExist(err), "%s 应随 config-configcenter 一起裁掉", path)
+	}
+	for _, path := range []string{"Makefile", "compose.yaml", "deploy/deployment.yaml"} {
+		data, err := os.ReadFile(filepath.Join(standalone, path))
+		require.NoError(t, err)
+		assert.NotContains(t, string(data), "CONFIG_SOURCE_FILE", "%s 残留 Config Center selector 接线", path)
+		assert.NotContains(t, string(data), "config-source", "%s 残留 Config Center selector 挂载", path)
 	}
 }
 
@@ -336,7 +351,7 @@ func TestGenerateMonorepo(t *testing.T) {
 		Module:   "github.com/acme/ecommerce/backend",
 		Dest:     dest,
 		Layout:   "monorepo",
-		Features: []string{"postgres", "redis", "consul", "config-consul"},
+		Features: []string{"postgres", "redis", "consul"},
 	})
 	require.NoError(t, err)
 	require.NoError(t, Apply(context.Background(), p, nil))
@@ -353,38 +368,25 @@ func TestGenerateMonorepo(t *testing.T) {
 	_, err = os.Stat(filepath.Join(root, "api"))
 	assert.True(t, os.IsNotExist(err), "api/ 应当整棵搬走,不留空目录")
 
-	// configcenter 配置源由 layouts.monorepo.features 强制启用(上面的 Features
-	// 里没选它),而且必须真的被接进 NewSource 的分支里 —— 只落文件不接线的话,
-	// CONFIG_SOURCE=configcenter 会报 unknown,而文件明明在那儿
+	// config-configcenter 由 layouts.monorepo.features 强制启用(上面的 Features
+	// 里没选它),而且必须真的被接进 NewSource —— 只落文件不接线的话,
+	// CONFIG_SOURCE_FILE 分支会被裁掉。
 	cfgDir := filepath.Join(root, "internal", "pkg", "config")
-	assertFileContains(t, filepath.Join(cfgDir, "source_configcenter.go"), "func NewConfigCenterSource(")
-	assertFileContains(t, filepath.Join(cfgDir, "source.go"), "return NewConfigCenterSource()")
-	assertFileContains(t, filepath.Join(cfgDir, "source.go"), "ConfigSourceConfigCenter,")
+	assertFileContains(t, filepath.Join(cfgDir, "source_sdk.go"), "func NewSDKSource(")
+	assertFileContains(t, filepath.Join(cfgDir, "source.go"), "return NewSDKSource(sourceConfigFile)")
+	assertFileContains(t, filepath.Join(cfgDir, "source.go"), "EnvConfigSourceFile")
 
-	// configcenter 随身带的 config-service 契约也要跟着搬到仓库根
-	sharedProto := filepath.Join(dest, p.ProtoDir, "config", "v1", "config.proto")
-	_, err = os.Stat(sharedProto)
-	assert.NoError(t, err, "api/config 应当搬到 %s", p.ProtoDir)
-
-	// 往同一个 monorepo 里再生成一个服务:api/config 已经在那儿了,
-	// shared_proto 必须让它通过,而不是报「refusing to overwrite」。
-	// 这是 monorepo 的常态 —— 谁都不会只生成一个服务。
-	before, err := os.ReadFile(sharedProto)
-	require.NoError(t, err)
-
+	// 往同一个 monorepo 里再生成一个服务。这是常态 —— 谁都不会只生成一个服务。
 	p2, err := NewPlan(src, m, Options{
 		Name:     "order",
 		Module:   "github.com/acme/ecommerce/backend",
 		Dest:     dest,
 		Layout:   "monorepo",
-		Features: []string{"postgres", "redis", "consul", "config-consul"},
+		Features: []string{"postgres", "redis", "consul"},
 	})
 	require.NoError(t, err)
-	require.NoError(t, Apply(context.Background(), p2, nil), "第二个服务不该被共用 proto 挡住")
+	require.NoError(t, Apply(context.Background(), p2, nil), "第二个服务不该被挡住")
 
-	after, err := os.ReadFile(sharedProto)
-	require.NoError(t, err)
-	assert.Equal(t, before, after, "共用 proto 该保留仓库里那份,不能被模板覆盖回去")
 	_, err = os.Stat(filepath.Join(dest, p2.ProtoDir, "order", "v1", "order.proto"))
 	assert.NoError(t, err)
 
@@ -423,7 +425,7 @@ func buildMonorepo(t *testing.T, src Source, dest string, p *Plan, services []st
 
 	// buf 必须在仓库根跑,--path 不可省:third_party 下那份 WKT 副本与 buf 内置的
 	// 同名,整模块构建会报 name conflict over google.protobuf.Any
-	paths := []string{filepath.Join("api", "config")}
+	paths := []string{}
 	for _, s := range services {
 		paths = append(paths,
 			filepath.Join("api", s),
@@ -453,7 +455,7 @@ func TestGeneratePrunesMarkers(t *testing.T) {
 		Module:   "github.com/acme/shop",
 		Dest:     dest,
 		Layout:   "standalone",
-		Features: []string{"postgres", "consul", "config-consul"},
+		Features: []string{"postgres", "consul", "config-configcenter"},
 	})
 	require.NoError(t, err)
 	require.NoError(t, Apply(context.Background(), p, nil))
@@ -508,7 +510,7 @@ func TestAddResource(t *testing.T) {
 		Module:   "github.com/acme/shop",
 		Dest:     dest,
 		Layout:   "standalone",
-		Features: []string{"postgres", "redis", "consul", "config-consul"},
+		Features: []string{"postgres", "redis", "consul"},
 	})
 	require.NoError(t, err)
 	require.NoError(t, Apply(context.Background(), p, nil))

@@ -157,8 +157,8 @@ func (p *Plan) applyRenames(root string) error {
 	// 资源模板里的 go_package 也是这么拼的({{.Module}}/{{.APIDir}}),两边必须一致。
 	//
 	// 顺序有意义:这条先跑,把模板里 api/ 的导入吃掉,下面那条通用规则就碰不到它们了。
-	// 漏掉这条的症状是 monorepo 下模板自带的 proto(api/config、--keep-example 的
-	// api/search)导入 <ServiceModule>/api/config/v1,而文件实际在 <Module>/api/config/v1,
+	// 漏掉这条的症状是 monorepo 下模板自带的 proto(--keep-example 的
+	// api/search)导入 <ServiceModule>/api/search/v1,而文件实际在 <Module>/api/search/v1,
 	// go build 报 "no required module provides package"。
 	// standalone 下 Module == ServiceModule,这条等价于通用规则,无副作用。
 	reps := []Replacement{
@@ -303,8 +303,8 @@ func (p *Plan) relocateProto(serviceRoot string, rep Reporter) error {
 			if !shared[e.Name()] {
 				return fmt.Errorf("%s already exists; refusing to overwrite another service's proto", dst)
 			}
-			// 共用子树(如配置中心的 api/config)已经在仓库里了。以仓库里那份
-			// 为准:它可能比模板新,覆盖回去等于把整个仓库的契约降级。
+			// 共用子树已经在仓库里了。以仓库里那份为准:它可能比模板新,
+			// 覆盖回去等于把整个仓库的契约降级。
 			rep.Step("keeping existing %s (shared)", ToSlash(filepath.Join(p.ProtoDir, e.Name())))
 			continue
 		}

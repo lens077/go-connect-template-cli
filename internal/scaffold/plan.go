@@ -37,7 +37,6 @@ type Options struct {
 	DockerRegistry  string
 	DockerNamespace string
 	ConsulAddr      string
-	ConsulKVPrefix  string
 }
 
 // Plan 是一次生成的完整操作清单。
@@ -95,7 +94,6 @@ type TemplateData struct {
 	DockerRegistry  string
 	DockerNamespace string
 	ConsulAddr      string
-	ConsulKVPrefix  string
 }
 
 // NewPlan 计算一次生成要做的全部操作,不碰磁盘上的目标目录。
@@ -315,7 +313,6 @@ func (p *Plan) Data() TemplateData {
 		DockerRegistry:  p.Opts.DockerRegistry,
 		DockerNamespace: p.Opts.DockerNamespace,
 		ConsulAddr:      p.Opts.ConsulAddr,
-		ConsulKVPrefix:  p.Opts.ConsulKVPrefix,
 	}
 }
 
