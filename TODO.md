@@ -168,3 +168,7 @@ gofmt ✓   go build ✓   go vet ✓   go test ./... ✓(完整,非 -short)
 - [ ] **monorepo 下 buf 仍需用户自己在仓库根跑** `make api && make conf`。hook 不能代跑是因为
       `--path` 要写成相对仓库根的路径,在生成的服务目录里跑不了
 - [ ] **`CO_TEMPLATE_DIR` 不设时按并排 checkout 猜路径**,猜不到就跳过测试。CI 里要显式设置
+
+### 12. 仓库归并
+
+- [x] 确认旧路径 `co-cli` 与本仓指向同一远端、同一提交且跟踪文件一致；本仓是后续唯一维护入口

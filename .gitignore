@@ -1,3 +1,7 @@
 # Binaries
 co
 co-cli
+
+.playwright-mcp/
+extension-live-test.png
+.DS_Store
