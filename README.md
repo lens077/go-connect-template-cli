@@ -119,10 +119,10 @@ buf generate            # 独立仓库
 go build ./...
 ```
 
-生成的建表 DDL 落在 `internal/data/schema/000N_<表名>.sql`,序号接着服务里已有的 schema 往下排
-(`0001_carts.sql` → `0002_orders.sql`)。sqlc 按文件名排序读整个目录,序号就是建表顺序 ——
-新表引用老表时,排在前面会让外键建不起来。不带前缀的旧文件不参与计数(它在字典序里本来就
-排在所有 `000N_` 之后)。`queries/` 不加前缀:sqlc 读查询没有顺序语义。
+生成的 Goose migration 落在 `internal/data/migrations/000NN_<表名>.sql`，序号接着服务里已有的
+migration 往下排（`00001_carts.sql` → `00002_orders.sql`）。sqlc 按文件名排序读整个目录，
+序号同时决定迁移与建表顺序。新表引用老表时，排在前面会让外键建不起来。不带前缀的旧文件
+不参与计数。`queries/` 不加前缀：sqlc 读查询没有顺序语义。
 
 ### `co proto`
 
@@ -177,10 +177,9 @@ co proto gen api/merchant/v1/merchant.proto -t services/merchant/
 `<ServiceModule>/api/...`,而文件实际在 `<Module>/api/...`,`go build` 报
 `no required module provides package`。`TestGenerateMonorepo` 会真编译一次来守住它。
 
-`config-configcenter` 源经 `github.com/lens077/config-center` SDK 连配置中心。
-monorepo 里它就跑在同一个仓库,所以 `layouts.monorepo.features` 把这个 feature
-强制打开(与用户的 `--config-source` 取并集)。独立仓库默认也带上,本地仍可用
-`CONFIG_SOURCE=file`;生产挂 `CONFIG_SOURCE_FILE` 指向 `type: config_center` 的 selector。
+`config-configcenter` 源经 `github.com/lens077/control-tower` SDK 连接配置中心。
+monorepo 布局把该 feature 强制打开（与用户的 `--config-source` 取并集）。独立仓库默认也带上，
+本地仍可用 `CONFIG_SOURCE=file`；生产挂 `CONFIG_SOURCE_FILE` 指向 `type: config_center` 的 selector。
 
 契约 proto 由 SDK 携带,生成物不再复制 `api/config/`。
 
@@ -194,7 +193,7 @@ cart/
 ├── internal/
 │   ├── biz/                # 领域逻辑
 │   ├── conf/               # 配置结构(由 conf.proto 生成)
-│   ├── data/               # 仓储实现 + schema/ + queries/ + models/(sqlc)
+│   ├── data/               # 仓储实现 + migrations/ + queries/ + models/(sqlc)
 │   ├── pkg/                # config / registry / otel / dbutil / money / minio
 │   ├── server/             # HTTP + Connect handler 注册
 │   └── service/            # Connect handler

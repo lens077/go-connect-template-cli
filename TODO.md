@@ -171,4 +171,6 @@ gofmt ✓   go build ✓   go vet ✓   go test ./... ✓(完整,非 -short)
 
 ### 12. 仓库归并
 
-- [x] 确认旧路径 `co-cli` 与本仓指向同一远端、同一提交且跟踪文件一致；本仓是后续唯一维护入口
+- [x] 确认旧路径 `co-cli` 与本仓指向同一远端、同一提交且跟踪文件一致
+- [x] 删除本机重复 checkout `/Users/sumery/lens077/co-cli`；本仓是 CLI 唯一维护入口
+- [x] README 同步 Goose migration 路径与 `control-tower` SDK，避免文档继续指向旧标准
