@@ -22,8 +22,8 @@ type Spec struct {
 	ServiceModule string
 	// ServiceName 服务注册名,如 cart-service
 	ServiceName string
-	// SchemaSeq schema 文件名的 000N_ 前缀,决定 sqlc 读取建表语句的顺序。
-	// 由 NextSchemaSeq 从目标服务已有的 schema 目录算出。
+	// SchemaSeq migration 文件名的 000NN_ 前缀,决定 sqlc 读取建表语句的顺序。
+	// 由 NextSchemaSeq 从目标服务已有的 migrations 目录算出。
 	SchemaSeq string
 	// Features 已启用的 feature,模板里 {{if .Features.minio}} 用
 	Features manifest.FeatureSet

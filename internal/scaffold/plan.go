@@ -204,10 +204,10 @@ func NewPlan(src Source, m *manifest.Manifest, opts Options) (*Plan, error) {
 	return p, nil
 }
 
-// nextSchemaSeq 算新资源 schema 文件的 000N_ 前缀。
+// nextSchemaSeq 算新资源 migration 文件的 000NN_ 前缀。
 //
 // 要站在「删除已经执行完」的视角上算,所以得排掉 p.Deletes ——
-// 不带 --keep-example 时模板那份 0001_products.sql 会被删掉,新资源就该占
+// 不带 --keep-example 时模板那份 00001_products.sql 会被删掉,新资源就该占
 // 0001;照着模板原样数会让它跳到 0002,序号里空一个洞,看着像丢了一次迁移。
 //
 // 调用点在 p.Deletes 赋值之后,顺序不能换。

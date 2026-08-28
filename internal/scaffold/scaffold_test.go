@@ -77,7 +77,10 @@ var matrix = []combo{
 	{
 		name:     "keep-example",
 		features: []string{"postgres", "redis", "elasticsearch", "casdoor", "minio", "consul", "config-configcenter"},
-		opts:     func(o *Options) { o.KeepExample = true },
+		opts: func(o *Options) {
+			o.KeepExample = true
+			o.NoResource = true
+		},
 	},
 	{
 		// 一个 handler 都不注册的骨架。这一格专门守着 server.go 里那个
@@ -131,13 +134,13 @@ func TestPlanMatrix(t *testing.T) {
 
 				// schema 的序号要按「删除执行完之后」的目录算:示例资源被删掉时
 				// 0001 空了出来,新资源就该占它,而不是跳到 0002 留个洞
-				wantSeq := "0001"
+				wantSeq := "00001"
 				if opts.KeepExample {
-					wantSeq = "0002" // 模板自带的 0001_products.sql 留着
+					wantSeq = "00002" // 模板自带的 00001_products.sql 留着
 				}
 				assert.Equal(t, wantSeq, p.Resource.SchemaSeq)
 				assert.Contains(t, resource.Targets(*p.Resource),
-					filepath.Join("internal", "data", "schema", wantSeq+"_carts.sql"))
+					filepath.Join("internal", "data", "migrations", wantSeq+"_carts.sql"))
 			}
 
 			// 示例资源在不 --keep-example 时必须整套删掉
@@ -486,15 +489,16 @@ func TestGeneratePrunesMarkers(t *testing.T) {
 
 	gomod, err := os.ReadFile(filepath.Join(root, "go.mod"))
 	require.NoError(t, err)
-	assert.NotContains(t, string(gomod), "go-redis")
+	assert.NotContains(t, string(gomod), "github.com/redis/go-redis/v9")
+	assert.NotContains(t, string(gomod), "github.com/redis/go-redis/extra/redisotel-native/v9")
 	assert.Contains(t, string(gomod), "module github.com/acme/shop")
 
 	// 留下的东西也要真的留下
 	assertFileContains(t, filepath.Join(root, "internal", "data", "data.go"), "NewPostgres")
 
-	// schema 落盘时必须带 000N_ 前缀:sqlc 按文件名排序读整个 schema 目录,
-	// 不带前缀的文件在字典序里排到所有 000N_ 之后,后续资源引用它就建不起外键
-	assertFileContains(t, filepath.Join(root, "internal", "data", "schema", "0001_carts.sql"),
+	// schema 落盘时必须带 000NN_ 前缀:sqlc 按文件名排序读整个 migrations 目录,
+	// 不带前缀的文件在字典序里排到所有 000NN_ 之后,后续资源引用它就建不起外键
+	assertFileContains(t, filepath.Join(root, "internal", "data", "migrations", "00001_carts.sql"),
 		"CREATE TABLE IF NOT EXISTS carts")
 }
 
@@ -528,9 +532,9 @@ func TestAddResource(t *testing.T) {
 
 	assertFileContains(t, filepath.Join(root, "internal", "biz", "order.go"), "OrderUseCase")
 	// 序号要接着服务里已有的 schema 往下走(cart 占了 0001),
-	// 否则两套资源都叫 0001_,谁先建表就成了字典序的巧合
-	assert.Equal(t, "0002", add.Spec.SchemaSeq)
-	assertFileContains(t, filepath.Join(root, "internal", "data", "schema", "0002_orders.sql"),
+	// 否则两套资源都叫 00001_,谁先建表就成了字典序的巧合
+	assert.Equal(t, "00002", add.Spec.SchemaSeq)
+	assertFileContains(t, filepath.Join(root, "internal", "data", "migrations", "00002_orders.sql"),
 		"CREATE TABLE IF NOT EXISTS orders")
 	assertFileContains(t, filepath.Join(root, "api", "order", "v1", "order.proto"), "service OrderService")
 	// 新资源要被接到锚点上,否则生成了却没人用
