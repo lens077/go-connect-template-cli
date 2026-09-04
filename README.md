@@ -26,8 +26,8 @@
 ```go
 var Module = fx.Provide(
     NewData,
-    NewRedisClient,         // +co:redis
-    NewElasticSearchClient, // 全文检索 +co:elasticsearch
+    NewRedisClient,   // +co:redis
+    NewSearchCatalog, // +co:elasticsearch|meilisearch
     // +co:anchor data-providers
 )
 
@@ -36,12 +36,13 @@ func NewMinioClient(...) { ... }
 // +co:end
 ```
 
-- **行标记** `// +co:<feature>[,<feature>...]` —— feature 全开时只摘掉标记本身,
-  否则整行删掉。逗号是「与」。标记必须是行尾最后一个 token,前面的说明文字会保留。
-- **块标记** `// +co:begin <feature>` … `// +co:end` —— 可嵌套,`begin`/`end` 两行都会消失。
+- **行标记** `// +co:<feature-expression>` —— feature 表达式成立时只摘掉标记本身，
+  否则整行删掉。逗号是「与」，竖线是「或」；例如 `elasticsearch|meilisearch` 表示任一项启用。
+  标记必须是行尾最后一个 token，前面的说明文字会保留。
+- **块标记** `// +co:begin <feature-expression>` … `// +co:end` —— 可嵌套，`begin`/`end` 两行都会消失。
 - **锚点** `// +co:anchor <name>` —— 插入点,裁剪后**保留**,留给后续 `co resource add`。
 
-YAML / Makefile / Dockerfile / `.gitignore` 用 `#`,SQL 用 `--`,语义完全相同。
+YAML（含 `.yaml.example` / `.yml.example`）/ Makefile / Dockerfile / `.gitignore` 用 `#`，SQL 用 `--`，语义完全相同。
 `.proto` 刻意不参与裁剪:protoc 会把注释搬进生成的 Go 文件,标记的配对关系在那儿会断掉。
 
 ## 安装
@@ -90,13 +91,17 @@ co new cart --layout monorepo --dir ~/src/ecommerce --module github.com/acme/eco
 |---|---|
 | `--database` | `postgres`(必选一个) |
 | `--cache` | `redis` |
-| `--search` | `elasticsearch` |
+| `--search` | `elasticsearch`、`meilisearch`（二选一） |
 | `--iam` | `casdoor` |
 | `--store` | `minio` |
 | `--discovery` | `consul` |
 | `--config-source` | `config-file`、`config-configcenter`(可逗号分隔多选) |
 
 > mysql / sqlite 暂未提供。补充方式见模板 `.co/manifest.yaml` 里 `groups.database` 的注释。
+
+检索 adapter 在**生成期**选择，不是运行时开关。`--search elasticsearch` 会删除 Meilisearch 的
+adapter 文件、本地 compose 和 Go 依赖；`--search meilisearch` 反向删除 Elasticsearch 的对应内容。
+生成物只保留一个实现，但业务仓储统一依赖项目自有的 `SearchCatalog` interface，不接触厂商 SDK 类型。
 
 其它常用 flag:
 
@@ -194,7 +199,7 @@ cart/
 │   ├── biz/                # 领域逻辑
 │   ├── conf/               # 配置结构(由 conf.proto 生成)
 │   ├── data/               # 仓储实现 + migrations/ + queries/ + models/(sqlc)
-│   ├── pkg/                # config / registry / otel / dbutil / money / minio
+│   ├── pkg/                # kit 的 config / log / otel / registry adapter，以及 money / minio
 │   ├── server/             # HTTP + Connect handler 注册
 │   └── service/            # Connect handler
 ├── constants/
@@ -236,8 +241,9 @@ co-cli/
 # 单元测试:不联网、不落盘
 go test -short ./...
 
-# 完整测试:生成矩阵会真的生成项目并跑 go build ./...
-CO_TEMPLATE_DIR=../go-connect-template go test ./...
+# 完整测试：生成矩阵会真的生成项目并跑 go build ./...
+# go test 会把包目录作为工作目录，因此这里传绝对路径。
+CO_TEMPLATE_DIR="$(cd ../go-connect-template && pwd)" go test ./...
 ```
 
 `CO_TEMPLATE_DIR` 不设时默认按并排 checkout 猜(`../../../go-connect-template`),
@@ -245,7 +251,7 @@ CO_TEMPLATE_DIR=../go-connect-template go test ./...
 
 两种布局各有一格真生成 + 真编译的测试:
 
-- `TestGenerateMatrix` —— standalone,把 feature 组合矩阵跑一遍,每格 `go build ./...`
+- `TestGenerateMatrix` —— standalone，把 feature 组合矩阵跑一遍；Elasticsearch、Meilisearch 与无检索三种产物都会检查 adapter 隔离并执行 `go build ./...`
 - `TestGenerateMonorepo` —— 生成 `cart` + `order` 两个服务,补出仓库根(`go.mod` / `buf.*` /
   `third_party`)后在根上跑 buf 再整体编译。**monorepo 必须真编译**,因为它和 standalone
   唯一实质不同的地方是导入路径,而路径错只有编译才看得出来

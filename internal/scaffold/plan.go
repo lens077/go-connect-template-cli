@@ -121,10 +121,14 @@ func NewPlan(src Source, m *manifest.Manifest, opts Options) (*Plan, error) {
 	}
 
 	// 保留示例资源却关掉它依赖的 feature,生成物必然编译不过。
-	// 这里直接拦下并说清是哪个 feature,比让用户去读 go build 的报错强。
+	// needs 是全都要,needs_any 是互斥 adapter 里至少选一个。
 	if opts.KeepExample && !set.HasAll(m.Example.Needs) {
 		return nil, fmt.Errorf("--keep-example requires feature(s) %s, which are not enabled",
 			strings.Join(m.Example.Needs, ", "))
+	}
+	if opts.KeepExample && len(m.Example.NeedsAny) > 0 && !set.HasAny(m.Example.NeedsAny) {
+		return nil, fmt.Errorf("--keep-example requires one of feature(s) %s, but none is enabled",
+			strings.Join(m.Example.NeedsAny, ", "))
 	}
 
 	dest, err := filepath.Abs(opts.Dest)

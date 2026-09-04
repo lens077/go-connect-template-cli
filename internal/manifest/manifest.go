@@ -49,7 +49,10 @@ type Placeholders struct {
 type Example struct {
 	Name  string   `yaml:"name"`
 	Needs []string `yaml:"needs"`
-	Files []string `yaml:"files"`
+	// NeedsAny 表示至少启用其中一个 feature。用于多个互斥 adapter
+	// 共用同一份示例代码的场景。
+	NeedsAny []string `yaml:"needs_any"`
+	Files    []string `yaml:"files"`
 	// Keep 是「属于示例但不能删」的文件。典型是 sqlc 生成的 models/db.go:
 	// 它只含 DBTX 接口,data 层的公共代码依赖它。
 	Keep []string `yaml:"keep"`
@@ -198,19 +201,27 @@ func Load(repoRoot string) (*Manifest, error) {
 	return &m, nil
 }
 
-// SupportedVersion 是本 CLI 能处理的 manifest 版本。
-const SupportedVersion = 1
+const (
+	// SupportedVersion 是本 CLI 能处理的最新 manifest 版本。
+	SupportedVersion = 2
+	minVersion       = 1
+)
 
 func (m *Manifest) validate() error {
-	if m.Version != SupportedVersion {
-		return fmt.Errorf("version %d not supported by this co (expect %d); upgrade co or pin an older template ref",
-			m.Version, SupportedVersion)
+	if m.Version < minVersion || m.Version > SupportedVersion {
+		return fmt.Errorf("version %d not supported by this co (supported: %d-%d); upgrade co or pin a compatible template ref",
+			m.Version, minVersion, SupportedVersion)
 	}
 	if m.Module == "" {
 		return fmt.Errorf("module is required")
 	}
 	if len(m.Layouts) == 0 {
 		return fmt.Errorf("at least one layout is required")
+	}
+	for _, need := range append(append([]string{}, m.Example.Needs...), m.Example.NeedsAny...) {
+		if _, ok := m.Features[need]; !ok {
+			return fmt.Errorf("example: dependency refers to unknown feature %q", need)
+		}
 	}
 	for _, l := range m.SortedLayouts() {
 		if l.ServiceDir == "" || l.ProtoDir == "" || l.ServiceModule == "" {

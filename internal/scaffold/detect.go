@@ -25,6 +25,7 @@ func DetectFeatures(serviceRoot string, m *manifest.Manifest) (manifest.FeatureS
 		return nil, err
 	}
 
+	fileOwners, requireOwners := evidenceOwners(m)
 	set := manifest.FeatureSet{}
 	for _, f := range m.SortedFeatures() {
 		if f.Always {
@@ -32,32 +33,54 @@ func DetectFeatures(serviceRoot string, m *manifest.Manifest) (manifest.FeatureS
 			continue
 		}
 
-		switch {
-		case len(f.Files) > 0:
-			// 任一声明文件还在就算启用。用「任一」而不是「全部」:
-			// files 里可能混着 compose.yaml 这类用户会自行删掉的东西
-			for _, rel := range f.Files {
-				if _, serr := os.Stat(filepath.Join(serviceRoot, filepath.FromSlash(rel))); serr == nil {
-					set[f.Name] = true
-					break
-				}
+		// 只用本 feature 独占的证据。多个 adapter 可以共享接口文件;
+		// 若把共享文件也算上,ES 项目会同时被误判成启用了 Meilisearch。
+		observable := false
+		for _, rel := range f.Files {
+			if fileOwners[rel] != 1 {
+				continue
 			}
-		case len(f.Requires) > 0 && requires != nil:
+			observable = true
+			if _, serr := os.Stat(filepath.Join(serviceRoot, filepath.FromSlash(rel))); serr == nil {
+				set[f.Name] = true
+				break
+			}
+		}
+		if !set[f.Name] && requires != nil {
 			for _, req := range f.Requires {
+				if requireOwners[req] != 1 {
+					continue
+				}
+				observable = true
 				if requires[req] {
 					set[f.Name] = true
 					break
 				}
 			}
-		default:
-			// 既没有独占文件也没有独占依赖,没有任何可观测的痕迹。
-			// 当作启用处理:多留一段用不上的代码,比少生成一段导致编译不过好。
+		}
+		if !observable {
+			// 没有独占证据时无法可靠反推。宁可多留一段用不上的代码,
+			// 也不要少生成一段导致编译失败。
 			set[f.Name] = true
 		}
 	}
 	// 没探测到的 feature 也要显式置 false,模板才敢用 {{if .Features.x}}
 	m.Complete(set)
 	return set, nil
+}
+
+func evidenceOwners(m *manifest.Manifest) (map[string]int, map[string]int) {
+	files := map[string]int{}
+	requires := map[string]int{}
+	for _, f := range m.SortedFeatures() {
+		for _, file := range f.Files {
+			files[file]++
+		}
+		for _, req := range f.Requires {
+			requires[req]++
+		}
+	}
+	return files, requires
 }
 
 // readRequires 读 go.mod 的直接依赖。monorepo 下服务没有 go.mod,返回 nil。

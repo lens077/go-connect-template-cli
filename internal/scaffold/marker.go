@@ -15,6 +15,7 @@ import (
 //	行标记   NewRedisClient,   // +co:redis
 //	         registry.Module,  // 服务注册/发现 +co:consul
 //	         逗号是「与」:// +co:example,elasticsearch 要两个都开才保留。
+//	         竖线是「或」:// +co:elasticsearch|meilisearch 任一个开着就保留。
 //
 //	块标记   // +co:begin redis
 //	         ...
@@ -37,6 +38,9 @@ const (
 // commentPrefixFor 按扩展名给出行注释前缀。
 // 认不出的类型返回空串,调用方据此整file 跳过 —— 猜错前缀会把源码本身当注释删掉。
 func commentPrefixFor(path string) string {
+	if strings.HasSuffix(path, ".yaml.example") || strings.HasSuffix(path, ".yml.example") {
+		return "#"
+	}
 	switch filepath.Ext(path) {
 	case ".go":
 		return "//"
@@ -78,7 +82,7 @@ func Prune(path, content string, set manifest.FeatureSet) (string, bool, error) 
 		switch kind {
 		case markerBegin:
 			depth++
-			if dropAt < 0 && !set.HasAll(feats) {
+			if dropAt < 0 && !matchesFeatureExpression(set, feats) {
 				dropAt = depth
 			}
 			continue // begin 行本身永远不输出
@@ -108,7 +112,7 @@ func Prune(path, content string, set manifest.FeatureSet) (string, bool, error) 
 		}
 
 		if kind == markerLine {
-			if !set.HasAll(feats) {
+			if !matchesFeatureExpression(set, feats) {
 				continue
 			}
 			ln.text = stripLineMarker(ln.text, prefix)
@@ -134,8 +138,9 @@ const (
 	markerAnchor
 )
 
-// classify 判断一行属于哪种标记,并取出它挂的 feature 列表。
-func classify(body, prefix string) (markerKind, []string) {
+// classify 判断一行属于哪种标记,并取出它挂的 feature 表达式。
+// 返回值外层是「或」,内层是「与」。
+func classify(body, prefix string) (markerKind, [][]string) {
 	if !strings.Contains(body, markerPrefix) {
 		return markerNone, nil
 	}
@@ -149,12 +154,12 @@ func classify(body, prefix string) (markerKind, []string) {
 		case t == endToken:
 			return markerEnd, nil
 		case strings.HasPrefix(t, beginToken+" "):
-			return markerBegin, parseFeatures(strings.TrimPrefix(t, beginToken+" "))
+			return markerBegin, parseFeatureExpression(strings.TrimPrefix(t, beginToken+" "))
 		case strings.HasPrefix(t, anchorToken+" "):
 			return markerAnchor, nil
 		case strings.HasPrefix(t, markerPrefix):
 			// `// +co:redis` 独占一行 —— 当行标记处理,整行删掉/保留
-			return markerLine, parseFeatures(strings.TrimPrefix(t, markerPrefix))
+			return markerLine, parseFeatureExpression(strings.TrimPrefix(t, markerPrefix))
 		}
 	}
 
@@ -171,17 +176,32 @@ func classify(body, prefix string) (markerKind, []string) {
 	if !strings.Contains(body, prefix) {
 		return markerNone, nil
 	}
-	return markerLine, parseFeatures(strings.TrimPrefix(last, markerPrefix))
+	return markerLine, parseFeatureExpression(strings.TrimPrefix(last, markerPrefix))
 }
 
-func parseFeatures(s string) []string {
-	var out []string
-	for _, part := range strings.Split(strings.TrimSpace(s), ",") {
-		if p := strings.TrimSpace(part); p != "" {
-			out = append(out, p)
+func parseFeatureExpression(s string) [][]string {
+	var alternatives [][]string
+	for _, alternative := range strings.Split(strings.TrimSpace(s), "|") {
+		var all []string
+		for _, part := range strings.Split(alternative, ",") {
+			if feature := strings.TrimSpace(part); feature != "" {
+				all = append(all, feature)
+			}
+		}
+		if len(all) > 0 {
+			alternatives = append(alternatives, all)
 		}
 	}
-	return out
+	return alternatives
+}
+
+func matchesFeatureExpression(set manifest.FeatureSet, alternatives [][]string) bool {
+	for _, all := range alternatives {
+		if set.HasAll(all) {
+			return true
+		}
+	}
+	return false
 }
 
 // stripLineMarker 把行尾的 +co:xxx 去掉,注释因此变空的话连注释一起去掉。

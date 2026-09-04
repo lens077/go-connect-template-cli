@@ -61,6 +61,27 @@ func TestPrune(t *testing.T) {
 			want: "\tdrop\n",
 		},
 		{
+			name: "行标记:竖线是「或」,任一个开着就保留",
+			path: "x.go",
+			set:  set("meilisearch"),
+			in:   "\tNewSearchCatalog, // +co:elasticsearch|meilisearch\n",
+			want: "\tNewSearchCatalog,\n",
+		},
+		{
+			name: "行标记:「或」的选项全关时删除",
+			path: "x.go",
+			set:  set(),
+			in:   "\tNewSearchCatalog, // +co:elasticsearch|meilisearch\n",
+			want: "",
+		},
+		{
+			name: "块标记:「或」同样适用",
+			path: "x.go",
+			set:  set("elasticsearch"),
+			in:   "// +co:begin elasticsearch|meilisearch\ncheckSearch()\n// +co:end\n",
+			want: "checkSearch()\n",
+		},
+		{
 			name: "块标记:feature 关着,连同 begin/end 一起删",
 			path: "x.go",
 			set:  set(),
@@ -101,6 +122,13 @@ func TestPrune(t *testing.T) {
 			set:  set("postgres"),
 			in:   "data:\n  redis: {} # +co:redis\n  pg: {} # +co:postgres\n",
 			want: "data:\n  pg: {}\n",
+		},
+		{
+			name: "YAML example 复合后缀也参与裁剪",
+			path: "configs/config.yaml.example",
+			set:  set("meilisearch"),
+			in:   "username: elastic # +co:elasticsearch\napi_key: '' # +co:meilisearch\n",
+			want: "api_key: ''\n",
 		},
 		{
 			name: "SQL 用 -- 前缀",

@@ -24,6 +24,16 @@ func (s FeatureSet) HasAll(names []string) bool {
 	return true
 }
 
+// HasAny 判断一组 feature 是否至少启用一个。空集合返回 false。
+func (s FeatureSet) HasAny(names []string) bool {
+	for _, n := range names {
+		if s[n] {
+			return true
+		}
+	}
+	return false
+}
+
 // Names 返回排序后的已启用 feature 名。
 func (s FeatureSet) Names() []string {
 	out := make([]string, 0, len(s))

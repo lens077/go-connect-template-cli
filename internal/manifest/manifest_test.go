@@ -3,6 +3,7 @@ package manifest
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -127,6 +128,15 @@ func TestLoad(t *testing.T) {
 	assert.Equal(t, "standalone", m.Layouts["standalone"].Name)
 }
 
+func TestLoadVersionTwoExampleNeedsAny(t *testing.T) {
+	content := strings.Replace(minimal, "version: 1", "version: 2", 1)
+	content = strings.Replace(content, "needs: [elasticsearch]", "needs_any: [elasticsearch, opensearch]", 1)
+	m := mustLoad(t, content)
+
+	assert.Equal(t, []string{"elasticsearch", "opensearch"}, m.Example.NeedsAny)
+	assert.Empty(t, m.Example.Needs)
+}
+
 func TestLoadLayoutFeaturesAndSharedProto(t *testing.T) {
 	m := mustLoad(t, `version: 1
 module: m
@@ -239,6 +249,17 @@ features:
   a: {group: g, needs: [ghost]}
 groups:
   g: {members: [a]}
+layouts:
+  standalone: {service_dir: ".", proto_dir: api, service_module: m}
+`,
+			wantErr: `unknown feature "ghost"`,
+		},
+		{
+			name: "example 的 needs_any 指向不存在的 feature",
+			yaml: `version: 2
+module: m
+example:
+  needs_any: [ghost]
 layouts:
   standalone: {service_dir: ".", proto_dir: api, service_module: m}
 `,
@@ -536,6 +557,9 @@ func TestFeatureSet(t *testing.T) {
 	assert.True(t, s.HasAll([]string{"a", "b"}))
 	assert.False(t, s.HasAll([]string{"a", "c"}), "逗号语义是「与」")
 	assert.True(t, s.HasAll(nil))
+	assert.True(t, s.HasAny([]string{"c", "b"}))
+	assert.False(t, s.HasAny([]string{"c", "zzz"}))
+	assert.False(t, s.HasAny(nil))
 
 	assert.Equal(t, []string{"a", "b"}, s.Names())
 }

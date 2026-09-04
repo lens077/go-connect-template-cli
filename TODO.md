@@ -3,7 +3,7 @@
 本轮目标:把 `co-cli` 从「正则改写克隆下来的源码」重写成「按 manifest 做结构化裁剪」的声明式引擎。
 模板侧的改动见 `../go-connect-template/TODO.md`。
 
-核心思路是**只做减法**:模板本体是一份所有 feature 都打开且能编译的参考实现,CLI 只删文件、
+核心思路是**只做减法**:模板本体保留所有 feature 源码并能编译,CLI 只删文件、
 删标记行、删 `go.mod` require,不改写代码。删除的正确性由模板自己的 CI 兜住 ——
 模板编译得过,裁剪后剩下的部分就编译得过。
 
@@ -47,10 +47,11 @@ internal/
 
 - [x] `marker.go`:行标记 `// +co:a,b`(逗号是「与」,必须是行尾最后一个 token)、块标记
       `// +co:begin x` … `// +co:end`(可嵌套)、锚点 `// +co:anchor name`(裁剪后保留)
-- [x] 注释前缀按扩展名派发:`.go` → `//`,`.yaml/.yml/.toml` → `#`,`.sql` → `--`,
+- [x] 注释前缀按扩展名派发:`.go` → `//`,`.yaml/.yml/.yaml.example/.yml.example/.toml` → `#`,`.sql` → `--`,
       `Makefile`/`Dockerfile`/`.gitignore` 等 → `#`;其余(含 `.proto`、`.md`、`.ts`)返回空串 = 整个文件跳过
 - [x] `gomod.go`:用 `modfile` 精确 `DropRequire`,而不是文本替换 —— 后者会把 require 块里
-      恰好同前缀的依赖一起改掉
+      恰好同前缀的依赖一起改掉。生成后 `go mod tidy` 仍可能因共享 kit 的模块图把同一模块补成
+      `// indirect`；门禁要求的是未选 feature 不再直接导入或直接 require
 - [x] `apply.go` 的步骤顺序有强耦合,注释里写清楚了:删除 → 改名 → 裁剪 → 锚点插入 → 搬 proto → hook
 - [x] `deleteAll` 删完文件后向上收空目录 —— 否则 `api/search/v1/` 会剩个空壳被原样搬到
       `backend/api/search`,看着像漏删了示例资源
@@ -61,17 +62,16 @@ internal/
 
 - [x] `standalone` / `monorepo` 两种布局,差异全部由 manifest 的 `layouts.*` 描述
 - [x] `layouts.<name>.features`:布局强制启用的 feature,与用户选择取并集。monorepo 用它强制打开
-      `config-configcenter` —— 否则 `source_sdk.go` 会被裁掉,而 monorepo 的生产路径
-      正是 `CONFIG_SOURCE_FILE`
+      `config-configcenter` —— 否则 config adapter 里的 `controlsource.NewKitSource` 接线会被裁掉，
+      而 monorepo 的生产路径正是 `CONFIG_SOURCE_FILE`
 - [x] `layouts.<name>.shared_proto`:声明整个仓库共用的 proto 子树。搬 proto 时目标已存在就保留
       仓库里那份(它可能比模板新),而不是报冲突 —— 同一个 monorepo 里生成第二个服务时必然如此
 - [x] overlay 目录结构即目标路径,渲染后去掉 `.tmpl` 后缀写进 `service_dir`
 
 ### 5. 资源生成
 
-- [x] 改为「删除示例资源 + 按模板生成一套新的」,而不是重命名。模板的 `search` 示例深度耦合
-      Elasticsearch,不适合当通用样板;而 `Search` 还与 `conf.Search.ElasticSearch` 撞名,
-      全局重命名必然误伤
+- [x] 改为「删除示例资源 + 按模板生成一套新的」,而不是重命名。`search` 是检索目录示例,
+      不能可靠改名成任意 CRUD 资源；底层实现现已隔离在 `SearchCatalog` adapter 后面
 - [x] `--keep-example` 可保留示例资源
 - [x] 资源模板里 proto 的 `go_package` 统一拼 `{{.Module}}/{{.APIDir}}`
 
@@ -174,3 +174,20 @@ gofmt ✓   go build ✓   go vet ✓   go test ./... ✓(完整,非 -short)
 - [x] 确认旧路径 `co-cli` 与本仓指向同一远端、同一提交且跟踪文件一致
 - [x] 删除本机重复 checkout `/Users/sumery/lens077/co-cli`；本仓是 CLI 唯一维护入口
 - [x] README 同步 Goose migration 路径与 `control-tower` SDK，避免文档继续指向旧标准
+
+### 13. 检索 adapter 生成期互斥
+
+- [x] manifest v2 新增 `example.needs_any`，搜索示例可依赖任一互斥 adapter
+- [x] `+co:` 表达式新增竖线「或」语义，同时保留逗号「与」语义
+- [x] `groups.search` 同时提供 `elasticsearch` 与 `meilisearch`，解析层拒绝两者同时选择
+- [x] feature 反推只使用独占文件或依赖，避免共享 `search_catalog.go` 让两个 adapter 同时被误判为启用
+- [x] 生成矩阵覆盖两个 adapter，并检查未选择的源码、compose 与 Go 依赖没有进入产物
+
+### 14. go-connect-kit 生成契约
+
+- [x] 删除对模板 `source_sdk.go` 和基础设施实现副本的断言；生成物必须依赖 `go-connect-kit`
+- [x] monorepo 断言 Config Center 经 `controlsource.NewKitSource` 接入 `kitconfig.FromEnvironment`
+- [x] 生成矩阵先执行 `go mod tidy` 再编译，依赖版本不存在时必须失败，不能只记录日志后放行
+- [x] 聚焦生成验收检查无本地 `env` / `meta` / `dbutil` / `healthcheck`、kit semver、无 `replace`、Docker ldflags，并真实执行 `go build ./...`
+- [x] 发布前可显式设置 `CO_USE_LOCAL_MODULES=1`，仅在测试临时生成物中接入并排 checkout；默认路径仍验证已发布版本
+- [x] kit `v0.3.0` 与 control-tower `v0.1.4` 已发布；不带本地开关重跑完整生成矩阵

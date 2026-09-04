@@ -5,10 +5,12 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"golang.org/x/mod/modfile"
 
 	"github.com/lens077/co-cli/internal/manifest"
 	"github.com/lens077/co-cli/internal/resource"
@@ -67,6 +69,10 @@ var matrix = []combo{
 		features: []string{"postgres", "redis", "casdoor", "minio", "consul", "config-configcenter"},
 	},
 	{
+		name:     "meilisearch",
+		features: []string{"postgres", "redis", "meilisearch", "casdoor", "minio", "consul", "config-configcenter"},
+	},
+	{
 		name:     "no-iam",
 		features: []string{"postgres", "redis", "elasticsearch", "minio", "consul", "config-configcenter"},
 	},
@@ -76,7 +82,7 @@ var matrix = []combo{
 	},
 	{
 		name:     "keep-example",
-		features: []string{"postgres", "redis", "elasticsearch", "casdoor", "minio", "consul", "config-configcenter"},
+		features: []string{"postgres", "redis", "meilisearch", "casdoor", "minio", "consul", "config-configcenter"},
 		opts: func(o *Options) {
 			o.KeepExample = true
 			o.NoResource = true
@@ -152,7 +158,7 @@ func TestPlanMatrix(t *testing.T) {
 
 // TestPlanLayoutForcedFeatures 盯住 layouts.<name>.features:
 // 用户没选 config-configcenter,monorepo 也必须替他打开 —— 否则
-// source_sdk.go 会被裁掉,而 monorepo 的生产路径正是 CONFIG_SOURCE_FILE。
+// CONFIG_SOURCE_FILE 的配置与 control-tower SDK 依赖会被裁掉。
 func TestPlanLayoutForcedFeatures(t *testing.T) {
 	src, m := templateSource(t)
 
@@ -188,7 +194,6 @@ func TestPlanLayoutForcedFeatures(t *testing.T) {
 	standalone := filepath.Join(sp.Dest, sp.ServiceDir)
 	for _, path := range []string{
 		"configs/source.dev.yaml.example",
-		"internal/pkg/config/source_sdk.go",
 	} {
 		_, err := os.Stat(filepath.Join(standalone, path))
 		assert.True(t, os.IsNotExist(err), "%s 应随 config-configcenter 一起裁掉", path)
@@ -248,6 +253,64 @@ func TestPlanDevDependencies(t *testing.T) {
 	})
 }
 
+func TestPlanSearchAdapterChoice(t *testing.T) {
+	src, m := templateSource(t)
+	newPlan := func(features ...string) *Plan {
+		p, err := NewPlan(src, m, Options{
+			Name: "cart", Module: "github.com/acme/shop", Dest: t.TempDir(),
+			Layout: "standalone", Features: features, NoResource: true,
+		})
+		require.NoError(t, err)
+		return p
+	}
+
+	t.Run("Elasticsearch 不携带 Meilisearch 实现", func(t *testing.T) {
+		p := newPlan("postgres", "elasticsearch")
+		assert.Contains(t, p.Deletes, "internal/data/search_meilisearch.go")
+		assert.Contains(t, p.Deletes, "infrastructure/meilisearch/compose.yaml")
+		assert.Contains(t, p.DropRequires, "github.com/meilisearch/meilisearch-go")
+		assert.NotContains(t, p.Deletes, "internal/data/search_catalog.go")
+		assert.NotContains(t, p.Deletes, "internal/data/search_elasticsearch.go")
+	})
+
+	t.Run("Meilisearch 不携带 Elasticsearch 实现", func(t *testing.T) {
+		p := newPlan("postgres", "meilisearch")
+		assert.Contains(t, p.Deletes, "internal/data/search_elasticsearch.go")
+		assert.Contains(t, p.Deletes, "internal/data/search_elasticsearch_log.go")
+		assert.Contains(t, p.Deletes, "infrastructure/elasticsearch/compose.yaml")
+		assert.Contains(t, p.DropRequires, "github.com/elastic/go-elasticsearch/v9")
+		assert.Contains(t, p.DropRequires, "github.com/elastic/elastic-transport-go/v8")
+		assert.NotContains(t, p.Deletes, "internal/data/search_catalog.go")
+		assert.NotContains(t, p.Deletes, "internal/data/search_meilisearch.go")
+	})
+}
+
+func TestDetectFeaturesIgnoresSharedSearchFiles(t *testing.T) {
+	_, m := templateSource(t)
+
+	for _, tc := range []struct {
+		name, selected, other, adapter, requirement string
+	}{
+		{"elasticsearch", "elasticsearch", "meilisearch", "search_elasticsearch.go", "github.com/elastic/go-elasticsearch/v9 v9.0.0"},
+		{"meilisearch", "meilisearch", "elasticsearch", "search_meilisearch.go", "github.com/meilisearch/meilisearch-go v0.36.3"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			dataDir := filepath.Join(root, "internal", "data")
+			require.NoError(t, os.MkdirAll(dataDir, 0o755))
+			require.NoError(t, os.WriteFile(filepath.Join(dataDir, "search_catalog.go"), []byte("package data\n"), 0o644))
+			require.NoError(t, os.WriteFile(filepath.Join(dataDir, tc.adapter), []byte("package data\n"), 0o644))
+			require.NoError(t, os.WriteFile(filepath.Join(root, "go.mod"), []byte(
+				"module github.com/acme/shop\n\ngo 1.26\n\nrequire "+tc.requirement+"\n"), 0o644))
+
+			features, err := DetectFeatures(root, m)
+			require.NoError(t, err)
+			assert.True(t, features.Has(tc.selected))
+			assert.False(t, features.Has(tc.other), "共享的 search_catalog.go 不能证明另一个 adapter 已启用")
+		})
+	}
+}
+
 func TestPlanRejects(t *testing.T) {
 	src, m := templateSource(t)
 	base := Options{Name: "cart", Module: "github.com/acme/shop", Layout: "standalone", Features: []string{"postgres"}}
@@ -279,6 +342,23 @@ func TestPlanRejects(t *testing.T) {
 		o.Dest, o.Features = t.TempDir(), []string{"redis"}
 		_, err := NewPlan(src, m, o)
 		require.Error(t, err)
+	})
+
+	t.Run("检索 adapter 不能同时选择", func(t *testing.T) {
+		o := base
+		o.Dest = t.TempDir()
+		o.Features = []string{"postgres", "elasticsearch", "meilisearch"}
+		_, err := NewPlan(src, m, o)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "exclusive")
+	})
+
+	t.Run("保留搜索示例时必须选择一个 adapter", func(t *testing.T) {
+		o := base
+		o.Dest, o.KeepExample, o.NoResource = t.TempDir(), true, true
+		_, err := NewPlan(src, m, o)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "requires one of")
 	})
 }
 
@@ -333,7 +413,8 @@ func TestGenerateMatrix(t *testing.T) {
 			require.NoError(t, Apply(context.Background(), p, nil))
 
 			root := filepath.Join(p.Dest, p.ServiceDir)
-			goBuild(t, root)
+			assertSearchAdapterIsolation(t, root, p.Features)
+			goBuild(t, root, src.Root)
 		})
 	}
 }
@@ -372,12 +453,10 @@ func TestGenerateMonorepo(t *testing.T) {
 	assert.True(t, os.IsNotExist(err), "api/ 应当整棵搬走,不留空目录")
 
 	// config-configcenter 由 layouts.monorepo.features 强制启用(上面的 Features
-	// 里没选它),而且必须真的被接进 NewSource —— 只落文件不接线的话,
-	// CONFIG_SOURCE_FILE 分支会被裁掉。
-	cfgDir := filepath.Join(root, "internal", "pkg", "config")
-	assertFileContains(t, filepath.Join(cfgDir, "source_sdk.go"), "func NewSDKSource(")
-	assertFileContains(t, filepath.Join(cfgDir, "source.go"), "return NewSDKSource(sourceConfigFile)")
-	assertFileContains(t, filepath.Join(cfgDir, "source.go"), "EnvConfigSourceFile")
+	// 里没选它),而且必须通过 control-tower 的 adapter 接入 go-connect-kit。
+	cfgFile := filepath.Join(root, "internal", "pkg", "config", "config.go")
+	assertFileContains(t, cfgFile, "controlsource.NewKitSource")
+	assertFileContains(t, cfgFile, "kitconfig.FromEnvironment")
 
 	// 往同一个 monorepo 里再生成一个服务。这是常态 —— 谁都不会只生成一个服务。
 	p2, err := NewPlan(src, m, Options{
@@ -441,12 +520,7 @@ func buildMonorepo(t *testing.T, src Source, dest string, p *Plan, services []st
 		require.NoErrorf(t, err, "buf generate --path %s 失败:\n%s", rel, out)
 	}
 
-	tidy := exec.Command("go", "mod", "tidy")
-	tidy.Dir = modRoot
-	if out, err := tidy.CombinedOutput(); err != nil {
-		t.Logf("go mod tidy 报错(继续尝试编译):\n%s", out)
-	}
-	goBuild(t, modRoot)
+	goBuild(t, modRoot, src.Root)
 }
 
 func TestGeneratePrunesMarkers(t *testing.T) {
@@ -483,15 +557,37 @@ func TestGeneratePrunesMarkers(t *testing.T) {
 		return nil
 	}))
 
-	// 关掉的 feature:文件、provider 行、go.mod 依赖三处都得干净
-	_, err = os.Stat(filepath.Join(root, "internal", "data", "redis.go"))
+	// 关掉的 feature:源码与 provider 行必须消失；tidy 可因 kit 的模块图
+	// 保留 transitive require，但它不能再是生成物的直接依赖。
+	_, err = os.Stat(filepath.Join(root, "internal", "data", "cache_redis.go"))
 	assert.True(t, os.IsNotExist(err))
 
 	gomod, err := os.ReadFile(filepath.Join(root, "go.mod"))
 	require.NoError(t, err)
-	assert.NotContains(t, string(gomod), "github.com/redis/go-redis/v9")
-	assert.NotContains(t, string(gomod), "github.com/redis/go-redis/extra/redisotel-native/v9")
+	parsed, err := modfile.Parse("go.mod", gomod, nil)
+	require.NoError(t, err)
+	for _, dependency := range parsed.Require {
+		if dependency.Mod.Path == "github.com/redis/go-redis/v9" ||
+			dependency.Mod.Path == "github.com/redis/go-redis/extra/redisotel-native/v9" {
+			assert.True(t, dependency.Indirect, "%s must not remain a direct dependency when redis is disabled", dependency.Mod.Path)
+		}
+	}
 	assert.Contains(t, string(gomod), "module github.com/acme/shop")
+	assert.Contains(t, string(gomod), "github.com/lens077/go-connect-kit")
+
+	for _, rel := range []string{
+		"internal/pkg/dbutil",
+		"internal/pkg/env",
+		"internal/pkg/meta",
+		"internal/pkg/config/live.go",
+		"internal/pkg/config/source.go",
+		"internal/pkg/log/es.go",
+		"internal/pkg/healthcheck/consul.go",
+	} {
+		_, statErr := os.Stat(filepath.Join(root, filepath.FromSlash(rel)))
+		assert.True(t, os.IsNotExist(statErr), "生成物不应带回 kit 实现副本 %s", rel)
+	}
+	assertFileContains(t, filepath.Join(root, "internal", "data", "data.go"), "go-connect-kit/dbutil")
 
 	// 留下的东西也要真的留下
 	assertFileContains(t, filepath.Join(root, "internal", "data", "data.go"), "NewPostgres")
@@ -547,6 +643,46 @@ func TestAddResource(t *testing.T) {
 	})
 }
 
+func assertSearchAdapterIsolation(t *testing.T, root string, features manifest.FeatureSet) {
+	t.Helper()
+
+	forbidden := []string{}
+	switch {
+	case features.Has("elasticsearch"):
+		forbidden = []string{"meilisearch"}
+		_, err := os.Stat(filepath.Join(root, "internal", "data", "search_meilisearch.go"))
+		assert.True(t, os.IsNotExist(err), "ES 产物不应包含 Meilisearch adapter 文件")
+	case features.Has("meilisearch"):
+		forbidden = []string{"elasticsearch", "github.com/elastic/"}
+		_, err := os.Stat(filepath.Join(root, "internal", "data", "search_elasticsearch.go"))
+		assert.True(t, os.IsNotExist(err), "Meilisearch 产物不应包含 ES adapter 文件")
+	default:
+		forbidden = []string{"elasticsearch", "meilisearch", "github.com/elastic/"}
+	}
+
+	require.NoError(t, filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return err
+		}
+		ext := filepath.Ext(path)
+		base := filepath.Base(path)
+		isYAMLExample := strings.HasSuffix(path, ".yaml.example") || strings.HasSuffix(path, ".yml.example")
+		// go.sum 只是下载校验记录,不代表生成物直接依赖或包含对应实现。
+		if ext != ".go" && ext != ".proto" && ext != ".yaml" && ext != ".yml" && !isYAMLExample && base != "go.mod" && base != "Makefile" {
+			return nil
+		}
+		data, readErr := os.ReadFile(path)
+		if readErr != nil {
+			return readErr
+		}
+		content := strings.ToLower(string(data))
+		for _, needle := range forbidden {
+			assert.NotContains(t, content, needle, "%s 泄漏了未选择的检索 adapter", relTo(root, path))
+		}
+		return nil
+	}))
+}
+
 func requireTools(t *testing.T, names ...string) {
 	t.Helper()
 	for _, n := range names {
@@ -556,12 +692,45 @@ func requireTools(t *testing.T, names ...string) {
 	}
 }
 
-func goBuild(t *testing.T, dir string) {
+func goBuild(t *testing.T, dir, templateRoot string) {
 	t.Helper()
+	addLocalModuleReplacements(t, dir, templateRoot)
+
+	tidy := exec.Command("go", "mod", "tidy")
+	tidy.Dir = dir
+	out, err := tidy.CombinedOutput()
+	require.NoErrorf(t, err, "go mod tidy 在 %s 失败:\n%s", dir, out)
+
 	cmd := exec.Command("go", "build", "./...")
 	cmd.Dir = dir
-	out, err := cmd.CombinedOutput()
+	out, err = cmd.CombinedOutput()
 	require.NoErrorf(t, err, "go build ./... 在 %s 失败:\n%s", dir, out)
+}
+
+// CO_USE_LOCAL_MODULES=1 lets the pre-release generation matrix validate local
+// sibling modules. The default path resolves published versions and must fail
+// when a declared release is unavailable.
+func addLocalModuleReplacements(t *testing.T, dir, templateRoot string) {
+	t.Helper()
+	if os.Getenv("CO_USE_LOCAL_MODULES") != "1" {
+		return
+	}
+	parent := filepath.Dir(templateRoot)
+	for module, sibling := range map[string]string{
+		"github.com/lens077/go-connect-kit": "go-connect-kit",
+		"github.com/lens077/control-tower":  "control-tower",
+	} {
+		root := filepath.Join(parent, sibling)
+		if _, err := os.Stat(filepath.Join(root, "go.mod")); os.IsNotExist(err) {
+			continue
+		} else {
+			require.NoError(t, err)
+		}
+		cmd := exec.Command("go", "mod", "edit", "-replace="+module+"="+root)
+		cmd.Dir = dir
+		out, err := cmd.CombinedOutput()
+		require.NoErrorf(t, err, "为生成物添加临时本地依赖 %s 失败:\n%s", module, out)
+	}
 }
 
 func assertFileContains(t *testing.T, path, want string) {
