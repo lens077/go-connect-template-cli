@@ -65,9 +65,20 @@ func TestGeneratedServiceUsesPublishedSharedKit(t *testing.T) {
 	assert.Contains(t, string(dockerfile), "-X github.com/lens077/go-connect-kit/meta.Version=$VERSION")
 	assert.NotContains(t, string(dockerfile), "-X main.Version=$VERSION")
 
-	cmd := exec.Command("go", "build", "./...")
-	cmd.Dir = root
-	cmd.Env = append(os.Environ(), "GOWORK=off", "CO_USE_LOCAL_MODULES=")
-	output, err := cmd.CombinedOutput()
-	require.NoErrorf(t, err, "生成物无法使用已发布的 %s@%s 编译:\n%s", kitModule, kitVersion, output)
+	for _, rel := range []string{"configs/dev.yml", "configs/config.yaml.example"} {
+		contents, readErr := os.ReadFile(filepath.Join(root, filepath.FromSlash(rel)))
+		require.NoError(t, readErr)
+		assert.NotContains(t, string(contents), "\nauth:", "未启用 casdoor 时 %s 不应保留 auth 配置", rel)
+	}
+
+	for _, command := range [][]string{
+		{"go", "build", "./..."},
+		{"go", "test", "-count=1", "./..."},
+	} {
+		cmd := exec.Command(command[0], command[1:]...)
+		cmd.Dir = root
+		cmd.Env = append(os.Environ(), "GOWORK=off", "CO_USE_LOCAL_MODULES=")
+		output, commandErr := cmd.CombinedOutput()
+		require.NoErrorf(t, commandErr, "生成物命令 %v 无法使用已发布的 %s@%s 完成:\n%s", command, kitModule, kitVersion, output)
+	}
 }

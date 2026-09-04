@@ -188,6 +188,7 @@ gofmt ✓   go build ✓   go vet ✓   go test ./... ✓(完整,非 -short)
 - [x] 删除对模板 `source_sdk.go` 和基础设施实现副本的断言；生成物必须依赖 `go-connect-kit`
 - [x] monorepo 断言 Config Center 经 `controlsource.NewKitSource` 接入 `kitconfig.FromEnvironment`
 - [x] 生成矩阵先执行 `go mod tidy` 再编译，依赖版本不存在时必须失败，不能只记录日志后放行
-- [x] 聚焦生成验收检查无本地 `env` / `meta` / `dbutil` / `healthcheck`、kit semver、无 `replace`、Docker ldflags，并真实执行 `go build ./...`
+- [x] 聚焦生成验收检查无本地 `env` / `meta` / `dbutil` / `healthcheck`、kit semver、无 `replace`、Docker ldflags，并真实执行 `go build ./...` 与 `go test -count=1 ./...`
+- [x] 无 IAM 生成验收检查配置文件不再保留 `auth`，避免可选能力裁剪后只编译绿、生成物测试红
 - [x] 发布前可显式设置 `CO_USE_LOCAL_MODULES=1`，仅在测试临时生成物中接入并排 checkout；默认路径仍验证已发布版本
 - [x] kit `v0.3.0` 与 control-tower `v0.1.4` 已发布；不带本地开关重跑完整生成矩阵
