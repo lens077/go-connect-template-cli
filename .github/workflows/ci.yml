@@ -32,16 +32,22 @@ jobs:
           repository: lens077/go-connect-template
           path: go-connect-template
 
+      # 生成物继承模板的 go directive，比 CLI 自身的高；工具链按模板装，
+      # 否则生成物 go mod tidy 会因 GOTOOLCHAIN=local 拒绝。
       - name: Set up Go
         uses: actions/setup-go@v7
         with:
-          go-version-file: go.mod
+          go-version-file: go-connect-template/go.mod
           cache: true
 
+      # protoc 插件版本跟模板 go.mod 走，避免与生成物依赖漂移。
       - name: Install generation tools
+        working-directory: go-connect-template
         run: |
           go install github.com/bufbuild/buf/cmd/buf@v1.72.0
           go install github.com/sqlc-dev/sqlc/cmd/sqlc@v1.31.1
+          go install google.golang.org/protobuf/cmd/protoc-gen-go
+          go install connectrpc.com/connect/cmd/protoc-gen-connect-go
 
       - name: Download dependencies
         run: go mod download
