@@ -1,0 +1,55 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+    tags:
+      - "v*"
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Test, vet, and generate
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Check out CLI
+        uses: actions/checkout@v7
+
+      - name: Check out template
+        uses: actions/checkout@v7
+        with:
+          repository: lens077/go-connect-template
+          path: go-connect-template
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Install generation tools
+        run: |
+          go install github.com/bufbuild/buf/cmd/buf@v1.72.0
+          go install github.com/sqlc-dev/sqlc/cmd/sqlc@v1.31.1
+
+      - name: Download dependencies
+        run: go mod download
+
+      - name: Run tests and generation matrix
+        env:
+          CO_TEMPLATE_DIR: ${{ github.workspace }}/go-connect-template
+        run: go test ./...
+
+      - name: Run vet
+        run: go vet ./...

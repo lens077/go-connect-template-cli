@@ -192,3 +192,8 @@ gofmt ✓   go build ✓   go vet ✓   go test ./... ✓(完整,非 -short)
 - [x] 无 IAM 生成验收检查配置文件不再保留 `auth`，避免可选能力裁剪后只编译绿、生成物测试红
 - [x] 发布前可显式设置 `CO_USE_LOCAL_MODULES=1`，仅在测试临时生成物中接入并排 checkout；默认路径仍验证已发布版本
 - [x] kit `v0.3.0` 与 control-tower `v0.1.4` 已发布；不带本地开关重跑完整生成矩阵
+
+### 15. CI 与首个发布
+
+- [x] 新增 `.github/workflows/ci.yml`：并排 checkout 模板并显式设置 `CO_TEMPLATE_DIR`，安装 buf/sqlc 后跑完整生成矩阵与 `go vet`
+- [x] 打首个发布 tag `v0.1.0`；发布级验收用 `--template-ref v0.1.0` 从远端模板生成双 adapter 项目
