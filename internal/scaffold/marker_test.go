@@ -6,7 +6,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/lens077/co-cli/internal/manifest"
+	"github.com/lens077/go-connect-template-cli/internal/manifest"
 )
 
 func set(names ...string) manifest.FeatureSet {

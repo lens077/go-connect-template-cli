@@ -8,7 +8,7 @@ import (
 
 	"golang.org/x/mod/modfile"
 
-	"github.com/lens077/co-cli/internal/manifest"
+	"github.com/lens077/go-connect-template-cli/internal/manifest"
 )
 
 // co resource add 是在一个已经生成好的服务里干活,而那个服务里没有 manifest

@@ -1,4 +1,4 @@
-module github.com/lens077/co-cli
+module github.com/lens077/go-connect-template-cli
 
 go 1.26.1
 

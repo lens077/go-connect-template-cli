@@ -5,8 +5,8 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/lens077/co-cli/internal/scaffold"
-	"github.com/lens077/co-cli/internal/ui"
+	"github.com/lens077/go-connect-template-cli/internal/scaffold"
+	"github.com/lens077/go-connect-template-cli/internal/ui"
 )
 
 func newResourceCmd() *cobra.Command {

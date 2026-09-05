@@ -8,7 +8,7 @@ import (
 	"path/filepath"
 	"text/template"
 
-	"github.com/lens077/co-cli/internal/manifest"
+	"github.com/lens077/go-connect-template-cli/internal/manifest"
 )
 
 // Spec 是渲染一套资源需要的全部输入。

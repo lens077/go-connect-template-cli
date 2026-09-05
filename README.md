@@ -48,13 +48,20 @@ YAML（含 `.yaml.example` / `.yml.example`）/ Makefile / Dockerfile / `.gitign
 ## 安装
 
 ```shell
-go install github.com/lens077/co-cli@latest
+go install github.com/lens077/go-connect-template-cli@latest
+```
+
+`go install` 产出的二进制按 module 末段命名为 `go-connect-template-cli`；文档里的 `co ...` 是命令名，
+想直接敲 `co` 就在 `$GOBIN` 里加一个软链：
+
+```shell
+ln -s "$(go env GOPATH)/bin/go-connect-template-cli" "$(go env GOPATH)/bin/co"
 ```
 
 版本号可以用 ldflags 注入,不注入时退回 `debug.ReadBuildInfo()`:
 
 ```shell
-go build -ldflags "-X github.com/lens077/co-cli/internal/cli.Version=v1.2.3" .
+go build -ldflags "-X github.com/lens077/go-connect-template-cli/internal/cli.Version=v1.2.3" .
 ```
 
 ## 命令
@@ -213,7 +220,7 @@ cart/
 ## 目录结构
 
 ```
-co-cli/
+go-connect-template-cli/
 ├── main.go                 # 只调 cli.Execute()
 └── internal/
     ├── cli/                # cobra 命令,只做参数绑定,无业务逻辑

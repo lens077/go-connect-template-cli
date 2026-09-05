@@ -9,7 +9,7 @@ import (
 	"github.com/go-git/go-git/v5"
 	"github.com/go-git/go-git/v5/plumbing"
 
-	"github.com/lens077/co-cli/internal/manifest"
+	"github.com/lens077/go-connect-template-cli/internal/manifest"
 )
 
 // DefaultTemplateRepo 是默认的模板仓库。

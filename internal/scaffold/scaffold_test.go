@@ -12,8 +12,8 @@ import (
 	"github.com/stretchr/testify/require"
 	"golang.org/x/mod/modfile"
 
-	"github.com/lens077/co-cli/internal/manifest"
-	"github.com/lens077/co-cli/internal/resource"
+	"github.com/lens077/go-connect-template-cli/internal/manifest"
+	"github.com/lens077/go-connect-template-cli/internal/resource"
 )
 
 // templateSource 找到本地模板仓库。

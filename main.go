@@ -4,7 +4,7 @@ package main
 import (
 	"os"
 
-	"github.com/lens077/co-cli/internal/cli"
+	"github.com/lens077/go-connect-template-cli/internal/cli"
 )
 
 func main() { os.Exit(cli.Execute()) }

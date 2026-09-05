@@ -10,8 +10,8 @@ import (
 	"strings"
 	"text/template"
 
-	"github.com/lens077/co-cli/internal/manifest"
-	"github.com/lens077/co-cli/internal/resource"
+	"github.com/lens077/go-connect-template-cli/internal/manifest"
+	"github.com/lens077/go-connect-template-cli/internal/resource"
 )
 
 // Options 是 co new 的全部输入。

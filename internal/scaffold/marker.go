@@ -5,7 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/lens077/co-cli/internal/manifest"
+	"github.com/lens077/go-connect-template-cli/internal/manifest"
 )
 
 // +co: 标记的裁剪。模板里所有可选代码都靠它标出来,是整个引擎最吃重的一块。

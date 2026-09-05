@@ -9,9 +9,9 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/lens077/co-cli/internal/manifest"
-	"github.com/lens077/co-cli/internal/scaffold"
-	"github.com/lens077/co-cli/internal/ui"
+	"github.com/lens077/go-connect-template-cli/internal/manifest"
+	"github.com/lens077/go-connect-template-cli/internal/scaffold"
+	"github.com/lens077/go-connect-template-cli/internal/ui"
 )
 
 // groupFlags 把 manifest 里的分组暴露成好记的 flag。

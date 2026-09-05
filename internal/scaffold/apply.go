@@ -12,8 +12,8 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/lens077/co-cli/internal/manifest"
-	"github.com/lens077/co-cli/internal/resource"
+	"github.com/lens077/go-connect-template-cli/internal/manifest"
+	"github.com/lens077/go-connect-template-cli/internal/resource"
 )
 
 // Reporter 让调用方决定进度怎么显示 —— 引擎不直接 fmt.Print,

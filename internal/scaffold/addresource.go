@@ -8,8 +8,8 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/lens077/co-cli/internal/manifest"
-	"github.com/lens077/co-cli/internal/resource"
+	"github.com/lens077/go-connect-template-cli/internal/manifest"
+	"github.com/lens077/go-connect-template-cli/internal/resource"
 )
 
 // AddOptions 是 co resource add 的输入。

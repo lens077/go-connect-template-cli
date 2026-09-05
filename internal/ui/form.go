@@ -7,7 +7,7 @@ import (
 
 	"github.com/charmbracelet/huh"
 
-	"github.com/lens077/co-cli/internal/manifest"
+	"github.com/lens077/go-connect-template-cli/internal/manifest"
 )
 
 // Answers 是表单收上来的结果。

@@ -197,3 +197,5 @@ gofmt ✓   go build ✓   go vet ✓   go test ./... ✓(完整,非 -short)
 
 - [x] 新增 `.github/workflows/ci.yml`：并排 checkout 模板并显式设置 `CO_TEMPLATE_DIR`，安装 buf/sqlc 后跑完整生成矩阵与 `go vet`
 - [x] 打首个发布 tag `v0.1.0`；发布级验收用 `--template-ref v0.1.0` 从远端模板生成双 adapter 项目
+- [x] module path 改为 `github.com/lens077/go-connect-template-cli`：仓库归并时只改了远端名，module 仍指向已不存在的 `co-cli`，`go install ...@v0.1.0` 拉不到。改完打 `v0.1.1`，`go install ...@v0.1.1` 作为验收
+- [ ] `v0.1.0` 的 module path 已损坏，不可 `go install`；不删 tag（已推送，删了会破坏 proxy 缓存一致性），文档只推荐 `v0.1.1+`

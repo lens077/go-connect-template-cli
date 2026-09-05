@@ -14,9 +14,9 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/lens077/co-cli/internal/manifest"
-	"github.com/lens077/co-cli/internal/scaffold"
-	"github.com/lens077/co-cli/internal/ui"
+	"github.com/lens077/go-connect-template-cli/internal/manifest"
+	"github.com/lens077/go-connect-template-cli/internal/scaffold"
+	"github.com/lens077/go-connect-template-cli/internal/ui"
 )
 
 // templateFlags 是「模板从哪儿来」这一组 flag,new / resource / doctor 共用。

@@ -7,7 +7,7 @@ import (
 	"strings"
 	"text/template"
 
-	"github.com/lens077/co-cli/internal/resource"
+	"github.com/lens077/go-connect-template-cli/internal/resource"
 )
 
 // SkeletonSpec 描述要新建的 proto 文件。
