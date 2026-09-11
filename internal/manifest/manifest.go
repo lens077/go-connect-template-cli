@@ -187,6 +187,17 @@ func Load(repoRoot string) (*Manifest, error) {
 		return nil, fmt.Errorf("read manifest: %w", err)
 	}
 
+	// 先宽松地只读版本号。严格解码遇到新版本才有的字段会先报「field xxx not found」,
+	// 那句话指不到真正的原因;v0.1.1 拉 v3 模板时就是这样。版本号超出支持范围
+	// 直接给「升级 co」这句人话,不让未知字段抢在前面。
+	var probe struct {
+		Version int `yaml:"version"`
+	}
+	if err := yaml.Unmarshal(data, &probe); err == nil && probe.Version > SupportedVersion {
+		return nil, fmt.Errorf("%s: version %d not supported by this co (supported: %d-%d); upgrade co or pin a compatible template ref",
+			Path, probe.Version, minVersion, SupportedVersion)
+	}
+
 	var m Manifest
 	// KnownFields 打开:manifest 里写错一个字段名(features 下拼成 require)
 	// 默认会被静默忽略,结果是该依赖没被删掉,而现场看不出任何异常。

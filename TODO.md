@@ -207,7 +207,8 @@ gofmt ✓   go build ✓   go vet ✓   go test ./... ✓(完整,非 -short)
 - [x] `assertFeatureTestFiles`：按 manifest 数据驱动核对 `_test.go` 去留——选中 feature 的必须在，未选的必须不在；以后给 adapter 补测试只需在 manifest 登记
 - [x] manifest v3：顶层 `exclude` 列表，模板自身元数据（`TODO.md`）无条件进删除清单并压过 `example.keep`。精确路径、无 glob；与 feature files / keep 重叠视为矛盾，加载即报错。`KnownFields` 打开着，新字段对旧 CLI 是错误而非忽略，所以必须走版本号——v1/v2 里出现 `exclude` 也报「version >= 3」
 - [x] 矩阵加 `assertExcluded`（生成物里不得有）与 plan 断言（必在 `Deletes` 里），都从 manifest 读，数据驱动
-- [ ] 模板已升到 manifest v3，需要 CLI 发新版（`v0.2.0`：contract 变更）后模板才能 push，否则 `v0.1.1` 的 CLI 拉最新模板会报版本不支持
+- [x] 模板已升到 manifest v3，CLI 发 `v0.2.0` 后模板 push 并打 `v0.2.0`
+- [x] `v0.1.1` 拉 v3 模板报的是 `field exclude not found in type manifest.Manifest`，不是「请升级 co」——严格解码抢在版本校验前面。已发布的 v0.1.1 改不了；main 上 `Load` 先宽松读版本号，超出支持范围直接给「upgrade co」，下个版本起生效
 
 ### 17. `co upgrade`
 
@@ -236,5 +237,6 @@ gofmt ✓   go build ✓   go vet ✓   go test ./... ✓(完整,非 -short)
 - [x] `.DS_Store` / `Thumbs.db` / `*.swp` / `*~` 在拷贝与比对时任何层级都跳过（`PathSkipper`）
 - [x] manifest v3 `layouts.*.root_packages`：monorepo 下 `constants` 由仓库根提供，删副本 + 导入改写 `<Module>/constants`。只写 `drop` 不够（import 仍指向 `services/<name>/constants`）。ecommerce cart 从 48 → 46 处差异，不再把已清掉的影子副本带回来
 - [x] 「下一步」按写入内容变化：写了 `.proto` 提示 `buf generate` / `make api && make conf`，写了 `.sql` 提示 `sqlc generate`
-- [ ] legacy cart 补锚点 + `--write-modified` 后剩两处真实分歧，工具不该替人决定：ecommerce 根 `constants` 缺 `DefaultDBPingTimeout` / `DefaultHealthCheckTimeout`（根包漂移，ecommerce 侧补）；`cart.go` 业务代码用旧的 `*LiveRedis`（业务适配）
+- [x] 发布链闭合：control-tower `v0.1.6`（HEAD 仅升 kit v0.4.3，工作树 WIP 不带）→ CLI `v0.2.0` → template `v0.2.0`（kit v0.4.3 / control-tower v0.1.6 / manifest v3）→ ecommerce 升 control-tower v0.1.6 并补根 `constants`。验收全部用已发布版本：`go install ...@v0.2.0`、`co new --template-ref v0.2.0`（standalone build/vet/test 绿；monorepo 无 constants 副本、import 指向根）、`co upgrade --template-ref v0.2.0` 零差异、drift 后 `--write` 收敛；control-tower/template 按 tag 浅克隆 `GOWORK=off` build/vet/test 绿
+- [ ] legacy cart 补锚点 + `--write-modified` 后剩两处真实分歧，工具不该替人决定：~~ecommerce 根 `constants` 缺 `DefaultDBPingTimeout` / `DefaultHealthCheckTimeout`~~（已在 ecommerce 侧补）；`cart.go` 业务代码用旧的 `*LiveRedis`（业务适配，留给 ecommerce）
 - [ ] 锚点段之外的用户定制（legacy cart 的自定义 health handler、`info meta.AppInfo` 参数）在 `--write-modified` 时按模板版本覆盖，diff 可见。这是 modified 层的定义，不是 bug；把锚点放在自定义块之后可以把它们纳入搬运范围

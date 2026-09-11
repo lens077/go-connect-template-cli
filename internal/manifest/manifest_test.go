@@ -204,6 +204,16 @@ layouts:
 	})
 }
 
+// 版本号超出支持范围时,提示必须是「升级 co」,而不是新字段的「field not found」——
+// 后者是严格解码抢先报的,指不到真正原因。v0.1.1 拉 v3 模板时就是这样。
+func TestLoadFutureVersionSaysUpgrade(t *testing.T) {
+	content := strings.Replace(minimal, "version: 1", "version: 99", 1) + "\nsome_future_field: [x]\n"
+	_, err := load(t, content)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "upgrade co")
+	assert.NotContains(t, err.Error(), "not found in type")
+}
+
 func TestLoadVersionTwoExampleNeedsAny(t *testing.T) {
 	content := strings.Replace(minimal, "version: 1", "version: 2", 1)
 	content = strings.Replace(content, "needs: [elasticsearch]", "needs_any: [elasticsearch, opensearch]", 1)
