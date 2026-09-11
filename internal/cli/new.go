@@ -62,6 +62,34 @@ type renderFlags struct {
 	consulAddr      string
 }
 
+// params 把 flag 值压成可写进 origin 的结构。
+func (r *renderFlags) params() scaffold.RenderParams {
+	return scaffold.RenderParams{
+		ServiceName:     r.serviceName,
+		DockerRegistry:  r.dockerRegistry,
+		DockerNamespace: r.dockerNamespace,
+		ConsulAddr:      r.consulAddr,
+	}
+}
+
+// applyOrigin 用 origin 里记录的渲染参数补上用户这次没显式传的 flag。
+// 显式传了的以用户为准 —— 他可能就是想换个镜像仓库。
+func (r *renderFlags) applyOrigin(cmd *cobra.Command, o scaffold.RenderParams) {
+	f := cmd.Flags()
+	if !f.Changed("service-name") && o.ServiceName != "" {
+		r.serviceName = o.ServiceName
+	}
+	if !f.Changed("docker-registry") && o.DockerRegistry != "" {
+		r.dockerRegistry = o.DockerRegistry
+	}
+	if !f.Changed("docker-namespace") && o.DockerNamespace != "" {
+		r.dockerNamespace = o.DockerNamespace
+	}
+	if !f.Changed("consul-addr") && o.ConsulAddr != "" {
+		r.consulAddr = o.ConsulAddr
+	}
+}
+
 func (r *renderFlags) register(cmd *cobra.Command) {
 	f := cmd.Flags()
 	f.StringVar(&r.serviceName, "service-name", "", "服务注册名,默认 <name>-service")
@@ -197,6 +225,24 @@ func runNew(cmd *cobra.Command, name string, o *newOptions) error {
 
 	if err := scaffold.Apply(cmd.Context(), plan, p); err != nil {
 		return err
+	}
+
+	// 生成记录:只记历史事实(模板 commit、渲染参数),给 co upgrade 做三方合并的 base。
+	// 模板不是 git 仓库(比如解压的目录)时没有 commit,就不写 —— 没有 base 的服务
+	// upgrade 退回两方比对,这是合法状态。
+	if src.Commit != "" {
+		if err := scaffold.WriteOrigin(filepath.Join(plan.Dest, plan.ServiceDir), scaffold.Origin{
+			Template: src.Repo,
+			Commit:   src.Commit,
+			Dirty:    src.Dirty,
+			Co:       version(),
+			Render:   o.render.params(),
+		}); err != nil {
+			return fmt.Errorf("write %s: %w", scaffold.OriginFile, err)
+		}
+		if src.Dirty {
+			p.Warn("模板工作树有未提交改动,%s 记录的 commit 只是近似;提交后再生成,upgrade 的 base 才准确", scaffold.OriginFile)
+		}
 	}
 
 	printNextSteps(p, plan)

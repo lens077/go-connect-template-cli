@@ -240,3 +240,17 @@ gofmt ✓   go build ✓   go vet ✓   go test ./... ✓(完整,非 -short)
 - [x] 发布链闭合：control-tower `v0.1.6`（HEAD 仅升 kit v0.4.3，工作树 WIP 不带）→ CLI `v0.2.0` → template `v0.2.0`（kit v0.4.3 / control-tower v0.1.6 / manifest v3）→ ecommerce 升 control-tower v0.1.6 并补根 `constants`。验收全部用已发布版本：`go install ...@v0.2.0`、`co new --template-ref v0.2.0`（standalone build/vet/test 绿；monorepo 无 constants 副本、import 指向根）、`co upgrade --template-ref v0.2.0` 零差异、drift 后 `--write` 收敛；control-tower/template 按 tag 浅克隆 `GOWORK=off` build/vet/test 绿
 - [ ] legacy cart 补锚点 + `--write-modified` 后剩两处真实分歧，工具不该替人决定：~~ecommerce 根 `constants` 缺 `DefaultDBPingTimeout` / `DefaultHealthCheckTimeout`~~（已在 ecommerce 侧补）；`cart.go` 业务代码用旧的 `*LiveRedis`（业务适配，留给 ecommerce）
 - [ ] 锚点段之外的用户定制（legacy cart 的自定义 health handler、`info meta.AppInfo` 参数）在 `--write-modified` 时按模板版本覆盖，diff 可见。这是 modified 层的定义，不是 bug；把锚点放在自定义块之后可以把它们纳入搬运范围
+
+### 19. `co upgrade` 三方合并
+
+第 17/18 条剩下的三个「敞着」其实是同一个根因:没有 base,两方比对分不清「模板改了」和「用户改了」。
+
+- [x] `.co-origin.yaml`:`co new` 写,只记历史事实(模板仓库、commit、co 版本、渲染参数),不记 feature 等现状。「从哪个 commit 生成」不随用户改代码而变,所以不违反「产物不存状态」;渲染参数顺带解决了「要再传一遍」
+- [x] `Source` 记 `Repo/Commit/Dirty`;`FetchAt(opts, rev)` 导出模板在任意 revision 的快照(本地目录从所属 git 仓库导出;远端维护一份完整 bare clone 再导出,按 commit 缓存)
+- [x] `PlanUpgrade`:origin 或 `--base-ref` → 生成 base 副本 → 逐文件 `git merge-file`(不自己写 diff3)。base == 模板当前 commit 时 base 直接指向 fresh(不能因此退回两方——两方会把用户改动报成 modified 并盖掉)。base 里没有的文件、找不到 git、`--no-base` 退回两方 + 锚点搬运
+- [x] `ChangeConflict`:冲突文件永远不写,`--diff` 打带标记的合并结果;同包 Go 文件耦合跟着不写。legacy blocked 只在无 base 时成立
+- [x] 全部写完(无跳过/拒绝)推进 origin 到模板新 commit;`--base-ref` 首次使用即记进 origin
+- [x] 第 17 条「紧贴锚点的替换 hunk 新旧两行都留」:有 base 后 git 判为相邻 hunk 冲突,显式而非静默(`TestThreeWayMergeAdjacentToAnchor`)。无 base 维持原行为
+- [x] 第 18 条「锚点段之外的定制被覆盖」:三方合并的 A/B/A 行,保留且不报差异
+- [x] 真实 ecommerce cart `--base-ref v0.1.0`(近似 base):46 → 19 处差异,biz/data/server/service 的 legacy 分歧全部消失(模板自 v0.1.0 没改过它们),2 处 conflict(`main.go`、`data.go`)显式标出;`--write-modified` 后 build/vet 绿
+- [ ] 存量 10 个服务的精确 base 不存在(旧正则 CLI 生成),`v0.1.0` 是最早的 manifest 期快照。近似 base 的代价:模板在 v0.1.0 之前就改过、而服务没跟上的行,会被当成「用户改的」保留——需要人对着 `--diff` 决定。这是数据问题,不是工具问题

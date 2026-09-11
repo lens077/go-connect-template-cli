@@ -35,10 +35,12 @@ func (t *templateFlags) register(cmd *cobra.Command) {
 	f.BoolVar(&t.noCache, "no-cache", false, "忽略本地缓存,强制重新 clone")
 }
 
+func (t *templateFlags) fetchOptions() scaffold.FetchOptions {
+	return scaffold.FetchOptions{Dir: t.dir, Repo: t.repo, Ref: t.ref, NoCache: t.noCache}
+}
+
 func (t *templateFlags) fetch(ctx context.Context) (scaffold.Source, *manifest.Manifest, error) {
-	src, err := scaffold.Fetch(ctx, scaffold.FetchOptions{
-		Dir: t.dir, Repo: t.repo, Ref: t.ref, NoCache: t.noCache,
-	})
+	src, err := scaffold.Fetch(ctx, t.fetchOptions())
 	if err != nil {
 		return scaffold.Source{}, nil, err
 	}

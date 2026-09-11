@@ -146,49 +146,61 @@ migration 往下排（`00001_carts.sql` → `00002_orders.sql`）。sqlc 按文�
 
 `co new` 是一次性的：生成完之后模板继续演进，已生成的服务不会跟着动，同一份基础设施
 代码在各个服务里各自漂移。`upgrade` 用同样的身份（name / module / layout）和反推出来的
-feature 重新生成一份干净副本，逐文件比对。产物里不埋版本号或状态文件——那种状态一旦
-和实际代码对不上（比如用户手动改过），后续所有决策都建立在假事实上。
+feature 重新生成一份干净副本，和服务比对。
 
 ```shell
 cd cart
-co upgrade                    # 只报告:added / modified,并标出 --write 会怎么处理
+co upgrade                    # 只报告,并标出 --write 会怎么处理每个文件
 co upgrade --diff             # 连具体改了哪几行一起看
 co upgrade --write            # 只写 added(模板新增、服务里没有的文件)
 co upgrade --write-modified   # 连 modified 一起写;先 --diff 看过再开
 co upgrade --only Makefile --only internal/server/server.go   # 只写点名的文件
+co upgrade --base-ref v0.1.0  # 旧服务没有 .co-origin.yaml 时,手工指定 base
 ```
+
+**三方合并**。`co new` 在服务里写一个 `.co-origin.yaml`，只记历史事实：模板仓库、生成时的
+commit、当时的 co 版本和渲染参数（`--docker-registry` 之类）。不记 feature 列表、不记「哪些文件
+是模板的」——那些描述的是代码现状，用户一改代码就成了假的；而「从哪个 commit 生成」怎么改
+代码都不会变。upgrade 拿这个 commit 再生成一份 base，对每个文件做 `git merge-file`：
+
+| base | 服务 | 模板新版 | 结果 |
+|---|---|---|---|
+| A | A | B | 模板改了 → 取 B |
+| A | B | A | 你改了 → 保留，**不报差异** |
+| — | X | — | 你加的行（接线、手写 provider）→ 保留 |
+| A | B | C | 两边改同一处 → `conflict`，不写；`--diff` 里带 `<<<<<<<` 标记 |
+
+全部差异写完后 origin 推进到模板新 commit；有跳过或冲突时不推。没有 origin 的旧服务退回两方
+比对（下面的锚点搬运），或用 `--base-ref` 给一个近似 base——模板自那之后没改过的文件不再报
+差异，改过的地方要么干净合并要么显式冲突；`--base-ref` 会被记进 origin，下次不必再传。
 
 比对规则：
 
 - 只比骨架与基础设施。业务资源（proto / biz / data / service）生成之后就归你了，不参与。
-- `+co:anchor` 段里模板没有的行（`NewXxx,`、`mux.Handle(...)`、手写的 provider）视为服务
-  自己的内容，比对前先搬进参考副本，写回时原样保留。模板删掉某个锚点时会告警而不是静默丢掉接线。
-- 只增改不删。模板删掉的文件不会跟着删——判断「这个文件是模板留下的还是你自己加的」
-  需要生成时的状态，而那份状态刻意没有存。
+- 没有 base 时，`+co:anchor` 段里模板没有的行（`NewXxx,`、`mux.Handle(...)`、手写的 provider）视为
+  服务自己的内容，比对前先搬进参考副本。模板删掉某个锚点时告警而不是静默丢掉接线。
+- 只增改不删。模板删掉的文件不会跟着删。
 - `go.mod` / `go.sum` / `*.pb.go` / `*.connect.go` / `internal/data/models/` 是 hook
   产物，不参与比对；写了 `.proto` / `.sql` 之后「下一步」会提示重新生成。
-- 生成时传过 `--service-name` / `--docker-registry` / `--docker-namespace` / `--consul-addr`
-  的，`upgrade` 要再传一遍。产物里没有记录这些值；不传就按默认值渲染，monorepo 的 `Makefile`
-  会因此报 modified（差异可见，不会静默写掉）。
+- 渲染参数从 origin 读；显式传了 flag 的以 flag 为准。没有 origin 时按默认值渲染。
 
-写回按风险分层。「git 工作区干净」只保证写坏了能撤销，保证不了「这个文件完全属于模板」——
-已经 commit 的业务定制 git status 看不见：
+写回按风险分层。「git 工作区干净」只保证写坏了能撤销，保证不了「这个文件完全属于模板」：
 
 | 层 | 什么 | `--write` | `--write-modified` | `--only` 点名 |
 |---|---|---|---|---|
 | added | 模板新增、服务里没有 | 写 | 写 | 写 |
-| modified | 两边都有但不同 | 不写 | 写 | 写 |
-| blocked | 模板带 `+co:anchor` 而服务里没有（锚点机制之前生成的 legacy 文件） | 不写 | 不写 | 不写 |
+| modified | 两边都有但不同（有 base 时是干净合并的结果） | 不写 | 写 | 写 |
+| conflict | 三方合并冲突 | 不写 | 不写 | 不写 |
+| blocked | 没有 base，且模板带 `+co:anchor` 而服务里没有（legacy 文件） | 不写 | 不写 | 不写 |
 
-- blocked 的文件盖上去会抹掉接线且 `go build` 不报错（没人引用的构造函数不是错误）。
-  出路是先手工补上锚点行（照模板同名文件的位置），再重跑——之后接线就能被搬运。
+- blocked 的文件盖上去会抹掉接线且 `go build` 不报错。出路是给一个 base（`--base-ref`），或
+  手工补上锚点行再重跑。
 - 同一个 Go 包是一个编译单元：模板把 `data.go` 拆成 `data.go + cache_redis.go` 时，只写
-  added 的 `cache_redis.go` 会 `redeclared`。所以同包里有 blocked 的 Go 文件跟着 blocked，
+  added 的 `cache_redis.go` 会 `redeclared`。所以同包里有 blocked / conflict 的 Go 文件跟着不写，
   added 的 Go 文件同包有未选中的 modified 时跟着跳过；列表里会标出原因。
 - 写入全部成功或全部不写：先落到服务目录下的暂存目录，再逐个 rename，失败即回滚。
 - `--allow-dirty` 只跳过 git 检查，不解锁任何一层。
 
-一个文件和模板不一样，可能是模板演进了，也可能是你故意改的，`co` 分辨不了，所以默认只报告。
 
 ### `co proto`
 

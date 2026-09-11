@@ -18,6 +18,8 @@ type upgradeOptions struct {
 	render renderFlags
 
 	name          string
+	baseRef       string
+	noBase        bool
 	write         bool
 	writeModified bool
 	only          []string
@@ -80,6 +82,8 @@ co new 是一次性的:生成完之后模板继续演进,已生成的服务不�
 	f.StringSliceVar(&o.only, "only", nil, "只写这些路径,可重复(隐含 --write;点名的 modified 视为已同意)")
 	f.BoolVar(&o.allowDirty, "allow-dirty", false, "跳过 git 干净检查(不解锁 blocked)")
 	f.BoolVar(&o.diff, "diff", false, "打印每个差异文件的 diff")
+	f.StringVar(&o.baseRef, "base-ref", "", "三方合并的 base(模板 commit/tag/分支),默认读服务里的 .co-origin.yaml")
+	f.BoolVar(&o.noBase, "no-base", false, "忽略 origin 与 --base-ref,只做两方比对")
 
 	return cmd
 }
@@ -95,6 +99,14 @@ func runUpgrade(cmd *cobra.Command, dir string, o *upgradeOptions) error {
 		p.Dim("using cached template at %s (--no-cache to refresh)", src.Root)
 	}
 
+	// origin 里记录了生成时的渲染参数,用户没显式传的就用它 —— 否则 monorepo 的
+	// Makefile 每次都因为镜像仓库不同报 modified
+	if !o.noBase {
+		if origin, oerr := scaffold.ReadOrigin(dir); oerr == nil && origin != nil {
+			o.render.applyOrigin(cmd, origin.Render)
+		}
+	}
+
 	up, err := scaffold.PlanUpgrade(cmd.Context(), src, m, scaffold.UpgradeOptions{
 		ServiceDir:      dir,
 		Name:            o.name,
@@ -102,6 +114,9 @@ func runUpgrade(cmd *cobra.Command, dir string, o *upgradeOptions) error {
 		DockerRegistry:  o.render.dockerRegistry,
 		DockerNamespace: o.render.dockerNamespace,
 		ConsulAddr:      o.render.consulAddr,
+		BaseRev:         o.baseRef,
+		NoBase:          o.noBase,
+		Fetch:           o.tmpl.fetchOptions(),
 	})
 	if err != nil {
 		return err
@@ -112,6 +127,12 @@ func runUpgrade(cmd *cobra.Command, dir string, o *upgradeOptions) error {
 	p.Dim("layout    %s", up.Layout)
 	p.Dim("module    %s", up.Module)
 	p.Dim("features  %s", strings.Join(up.Features, ", "))
+	switch {
+	case up.Base != "":
+		p.Dim("base      %s (three-way merge)", up.Base[:min(12, len(up.Base))])
+	default:
+		p.Dim("base      none (two-way; wiring kept via +co:anchor; give --base-ref or a %s for three-way merge)", scaffold.OriginFile)
+	}
 
 	// 先于差异列表打印:这些是 co 已经放弃自动处理的地方,
 	// 用户要带着它们去看下面的 modified,而不是看完列表才发现有坑
@@ -121,6 +142,9 @@ func runUpgrade(cmd *cobra.Command, dir string, o *upgradeOptions) error {
 
 	if len(up.Changes) == 0 {
 		p.Title("\n已是模板最新状态,无差异")
+		if o.write || o.writeModified {
+			advanceOrigin(p, up, src, o)
+		}
 		return nil
 	}
 
@@ -133,11 +157,14 @@ func runUpgrade(cmd *cobra.Command, dir string, o *upgradeOptions) error {
 	status := map[string]string{}
 	legacy := 0
 	for _, c := range sel.Blocked {
-		status[c.Path] = "[blocked]"
-		if !strings.Contains(c.Blocked, "same Go package") {
-			legacy++
-		} else {
+		switch {
+		case c.Kind == scaffold.ChangeConflict:
+			status[c.Path] = "[" + c.Blocked + "]"
+		case strings.Contains(c.Blocked, "same Go package"):
 			status[c.Path] = "[blocked: " + c.Blocked + "]"
+		default:
+			status[c.Path] = "[blocked]"
+			legacy++
 		}
 	}
 	for _, c := range sel.Skipped {
@@ -157,7 +184,8 @@ func runUpgrade(cmd *cobra.Command, dir string, o *upgradeOptions) error {
 	if legacy > 0 {
 		// 原因只打一次:每个 legacy 文件的原因都一样,逐行重复只会把列表淹掉
 		p.Warn("%d 个文件 blocked:模板在这里有 +co:anchor 而服务里没有(锚点机制之前生成的),"+
-			"接线搬不动,co 不会自动覆盖。先手工补上锚点行(见模板同名文件)再重跑。", legacy)
+			"接线搬不动,co 不会自动覆盖。给一个 base(--base-ref <模板 commit>)走三方合并,"+
+			"或手工补上锚点行(见模板同名文件)再重跑。", legacy)
 	}
 
 	if o.diff {
@@ -193,6 +221,16 @@ func runUpgrade(cmd *cobra.Command, dir string, o *upgradeOptions) error {
 	}
 
 	p.Title(fmt.Sprintf("\n已写入 %d 个文件", n))
+	// 全部差异都写完了,服务就等于模板新版:把 origin 推到新 commit,下次 upgrade 的
+	// base 才是对的。有跳过或拒绝的文件时不推 —— 那些文件还停在旧 base 上
+	if len(sel.Skipped) == 0 && len(sel.Blocked) == 0 {
+		advanceOrigin(p, up, src, o)
+	} else {
+		recordBaseRef(p, up, src, o)
+		if up.Base != "" {
+			p.Dim("%s 未推进:还有文件没写入,base 仍是 %s", scaffold.OriginFile, up.Base[:min(12, len(up.Base))])
+		}
+	}
 	p.Dim("\n下一步:")
 	steps := []step{{cmd: "git diff", note: "逐条 review,模板不认识你的本地修改"}}
 	// hook 产物不参与比对,写了源头就得重新生成:conf.proto 改了而 pb.go 没动,
@@ -219,6 +257,47 @@ func runUpgrade(cmd *cobra.Command, dir string, o *upgradeOptions) error {
 	steps = append(steps, step{cmd: "go build ./...", note: ""}, step{cmd: "go test ./...", note: ""})
 	printSteps(p, steps)
 	return nil
+}
+
+// advanceOrigin 把 .co-origin.yaml 推到模板当前 commit。
+// 只在「服务已与模板新版一致」时调用;origin 记的是事实,写一个不成立的 commit 比没有更糟。
+func advanceOrigin(p *ui.Printer, up *scaffold.Upgrade, src scaffold.Source, o *upgradeOptions) {
+	if src.Commit == "" || src.Commit == up.Base || o.noBase {
+		return
+	}
+	if err := scaffold.WriteOrigin(up.ServiceRoot, scaffold.Origin{
+		Template: src.Repo,
+		Commit:   src.Commit,
+		Dirty:    src.Dirty,
+		Co:       version(),
+		Render:   o.render.params(),
+	}); err != nil {
+		p.Warn("write %s: %v", scaffold.OriginFile, err)
+		return
+	}
+	p.Step("%s → %s", scaffold.OriginFile, src.Commit[:min(12, len(src.Commit))])
+}
+
+// recordBaseRef 把用户显式给的 --base-ref 写成 origin(如果之前没有)。
+// 用户断言「这个服务对应模板的这个 commit」是事实,记下来下次就不用再传;
+// 已有 origin 时不动 —— 这次的 --base-ref 只是一次性的覆盖。
+func recordBaseRef(p *ui.Printer, up *scaffold.Upgrade, src scaffold.Source, o *upgradeOptions) {
+	if o.baseRef == "" || o.noBase || up.Base == "" {
+		return
+	}
+	if existing, err := scaffold.ReadOrigin(up.ServiceRoot); err != nil || existing != nil {
+		return
+	}
+	if err := scaffold.WriteOrigin(up.ServiceRoot, scaffold.Origin{
+		Template: src.Repo,
+		Commit:   up.Base,
+		Co:       version(),
+		Render:   o.render.params(),
+	}); err != nil {
+		p.Warn("write %s: %v", scaffold.OriginFile, err)
+		return
+	}
+	p.Step("%s ← base %s(--base-ref 已记录,下次不必再传)", scaffold.OriginFile, up.Base[:min(12, len(up.Base))])
 }
 
 // requireCleanWorktree 确认服务目录在 git 里且没有未提交改动。
@@ -258,7 +337,7 @@ func printDiffs(p *ui.Printer, up *scaffold.Upgrade) {
 	}
 
 	for _, c := range up.Changes {
-		if c.Kind != scaffold.ChangeModified {
+		if c.Kind == scaffold.ChangeAdded {
 			continue
 		}
 		fresh, current, derr := up.Diff(c.Path)

@@ -3,10 +3,12 @@ package scaffold
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"go/format"
 	"io/fs"
 	"os"
+	"os/exec"
 	"path"
 	"path/filepath"
 	"sort"
@@ -38,9 +40,12 @@ type ChangeKind int
 const (
 	// ChangeAdded 模板新增,服务里还没有。这类改动最安全:不覆盖任何东西。
 	ChangeAdded ChangeKind = iota
-	// ChangeModified 两边都有但内容不同。可能是模板演进,也可能是用户改的,
-	// upgrade 分辨不了,所以默认只报告。
+	// ChangeModified 两边都有但内容不同。有 base 时是三方合并的干净结果;
+	// 没有 base 时可能是模板演进,也可能是用户改的,upgrade 分辨不了,所以默认只报告。
 	ChangeModified
+	// ChangeConflict 三方合并冲突:模板和服务改了同一处。不自动决定,永远不写;
+	// --diff 里能看到带标记的合并结果。
+	ChangeConflict
 )
 
 // String 让 ChangeKind 能直接打给用户看。
@@ -50,6 +55,8 @@ func (k ChangeKind) String() string {
 		return "added"
 	case ChangeModified:
 		return "modified"
+	case ChangeConflict:
+		return "conflict"
 	default:
 		return "unknown"
 	}
@@ -81,6 +88,12 @@ type Upgrade struct {
 	Features []string
 	// KeepExample 反推出来的「生成时带了 --keep-example」
 	KeepExample bool
+	// Base 三方合并用的模板 base(commit);空表示没有 base,走两方比对 + 锚点搬运
+	Base string
+	// BaseDirty 生成时模板工作树是脏的,base 只是近似
+	BaseDirty bool
+	// FreshCommit 模板新版的 commit,全部写入后 origin 推进到它;空表示模板不是 git 仓库
+	FreshCommit string
 	// Changes 已按路径排序
 	Changes []Change
 	// Warnings 是比对过程中无法自动处理、需要人看一眼的情况(比如模板删掉了某个锚点)
@@ -91,8 +104,10 @@ type Upgrade struct {
 	// 而不是回头读参考副本 —— 那份没有接线,直接盖上去会把服务写坏。
 	next map[string][]byte
 
-	freshRoot string
-	tempDir   string
+	freshRoot   string
+	baseRoot    string // 空表示没有 base
+	tempDir     string
+	baseTempDir string
 }
 
 // upgrade 比的是**源码**,不是构建产物。
@@ -109,6 +124,8 @@ var skipCompareExact = map[string]bool{
 	// go.mod 还额外危险 —— 覆盖它会把 module 路径改回模板自己的。
 	"go.mod": true,
 	"go.sum": true,
+	// co 自己写的生成记录,参考副本里没有,也不该被「升级」
+	OriginFile: true,
 }
 
 // skipComparePrefix 是按前缀排除的目录。
@@ -175,6 +192,14 @@ type UpgradeOptions struct {
 	DockerRegistry  string
 	DockerNamespace string
 	ConsulAddr      string
+
+	// BaseRev 三方合并的 base(commit / tag / 分支)。空则读服务里的 .co-origin.yaml;
+	// 都没有就退回两方比对。
+	BaseRev string
+	// NoBase 强制两方比对,忽略 origin 与 BaseRev
+	NoBase bool
+	// Fetch 取 base 快照用的模板来源(与当前模板同源:同一个 --template-dir / --template)
+	Fetch FetchOptions
 }
 
 // PlanUpgrade 比对一个已生成的服务与模板新版。
@@ -222,6 +247,7 @@ func PlanUpgrade(ctx context.Context, src Source, m *manifest.Manifest, opts Upg
 		Layout:      layoutName,
 		Features:    enabled,
 		KeepExample: keepExample,
+		FreshCommit: src.Commit,
 		tempDir:     tempDir,
 	}
 
@@ -260,15 +286,116 @@ func PlanUpgrade(ctx context.Context, src Source, m *manifest.Manifest, opts Upg
 	}
 
 	up.freshRoot = filepath.Join(tempDir, plan.ServiceDir)
-	changes, next, warnings, err := diffTrees(up.freshRoot, info.Root)
+
+	// base:模板在生成时的样子,同样的身份和 feature 再生成一份。
+	// 有了它,「这一行和模板不一样」就能分成「模板改了」和「用户改的」。
+	baseWarnings, err := up.prepareBase(ctx, src, opts, plan.Opts)
+	if err != nil {
+		up.cleanup()
+		return nil, err
+	}
+
+	changes, next, warnings, err := diffTrees(up.freshRoot, up.baseRoot, info.Root)
 	if err != nil {
 		up.cleanup()
 		return nil, err
 	}
 	up.Changes = changes
 	up.next = next
-	up.Warnings = warnings
+	up.Warnings = append(baseWarnings, warnings...)
 	return up, nil
+}
+
+// prepareBase 决定 base 来自哪里并把它生成到临时目录。返回的告警是「有 base 但打了折扣」的情况。
+//
+// 找不到 base 不是错误(旧服务没有 origin 文件),退回两方比对;
+// 明确要求了 base(origin 存在或传了 BaseRev)却取不到,才报错 —— 静默退回两方
+// 会让用户以为在做三方合并。
+func (u *Upgrade) prepareBase(ctx context.Context, src Source, opts UpgradeOptions, freshOpts Options) ([]string, error) {
+	if opts.NoBase {
+		return nil, nil
+	}
+
+	rev := opts.BaseRev
+	var warnings []string
+	if rev == "" {
+		origin, err := ReadOrigin(u.ServiceRoot)
+		if err != nil {
+			return nil, err
+		}
+		if origin == nil {
+			return nil, nil
+		}
+		rev = origin.Commit
+		u.BaseDirty = origin.Dirty
+		if origin.Dirty {
+			warnings = append(warnings, fmt.Sprintf(
+				"%s: template working tree was dirty at generation; base %s is approximate, review merges", OriginFile, short(rev)))
+		}
+		if origin.Template != "" && src.Repo != "" && origin.Template != src.Repo {
+			warnings = append(warnings, fmt.Sprintf(
+				"%s says the service was generated from %s, but comparing against %s", OriginFile, origin.Template, src.Repo))
+		}
+	}
+
+	if src.Commit != "" && rev == src.Commit && !src.Dirty {
+		// base 就是模板当前版本:三方合并退化成「模板没改,全是用户改的」。
+		// 让 base 直接指向 fresh 副本,省一次生成;merge3(current, fresh, fresh) 必然
+		// 得到 current,即零差异 —— 这正是「用户的改动不该被报成 modified」的语义。
+		// 注意不能因此跳过三方直接走两方:两方会把用户改动报成 modified 并盖掉。
+		u.Base = rev
+		u.baseRoot = u.freshRoot
+		return warnings, nil
+	}
+
+	baseSrc, err := FetchAt(ctx, opts.Fetch, rev)
+	if err != nil {
+		return nil, fmt.Errorf("base revision %s: %w (pass --no-base to compare without one)", short(rev), err)
+	}
+	baseManifest, err := manifest.Load(baseSrc.Root)
+	if err != nil {
+		return nil, fmt.Errorf("base revision %s: %w (pass --no-base to compare without one)", short(rev), err)
+	}
+
+	// feature 名在两个版本间可能不同:base 不认识的就去掉,并告警。
+	// 去掉意味着那个 feature 的文件在 base 里不存在,比对时那些文件按「模板新增」处理。
+	var baseFeatures []string
+	for _, f := range freshOpts.Features {
+		if _, ok := baseManifest.Features[f]; ok {
+			baseFeatures = append(baseFeatures, f)
+		} else {
+			warnings = append(warnings, fmt.Sprintf("base revision %s has no feature %q; its files are compared without a base", short(rev), f))
+		}
+	}
+
+	// base 不能放在 fresh 的临时目录里:standalone 的 ServiceDir 是 ".",
+	// fresh 副本就是整个临时目录,base 放进去会被当成模板新增的一棵树
+	baseDir, err := os.MkdirTemp("", "co-upgrade-base-")
+	if err != nil {
+		return nil, err
+	}
+	u.baseTempDir = baseDir
+	baseOpts := freshOpts
+	baseOpts.Dest = baseDir
+	baseOpts.Features = baseFeatures
+	basePlan, err := NewPlan(baseSrc, baseManifest, baseOpts)
+	if err != nil {
+		return nil, fmt.Errorf("base revision %s: %w (pass --no-base to compare without one)", short(rev), err)
+	}
+	basePlan.Hooks = nil
+	if err := Apply(ctx, basePlan, silentReporter{}); err != nil {
+		return nil, fmt.Errorf("generate base copy at %s: %w", short(rev), err)
+	}
+	u.Base = baseSrc.Commit
+	u.baseRoot = filepath.Join(baseOpts.Dest, basePlan.ServiceDir)
+	return warnings, nil
+}
+
+func short(commit string) string {
+	if len(commit) > 12 {
+		return commit[:12]
+	}
+	return commit
 }
 
 // Diff 返回某个文件「将要写入的内容」与当前内容,供调用方打 diff。
@@ -294,6 +421,10 @@ func (u *Upgrade) cleanup() error {
 	}
 	err := os.RemoveAll(u.tempDir)
 	u.tempDir = ""
+	if u.baseTempDir != "" {
+		err = errors.Join(err, os.RemoveAll(u.baseTempDir))
+		u.baseTempDir = ""
+	}
 	return err
 }
 
@@ -403,12 +534,22 @@ func enabledFeatures(set manifest.FeatureSet) []string {
 // 返回的 next 是每个差异文件将要写入的内容:模板那份经 gofmt,再把服务里
 // 锚点上方的接线搬进来(见 carryAnchors)。比对、--diff、--write 三处用的
 // 都是这一份,不会出现「看到的和写进去的不一样」。
-func diffTrees(freshRoot, serviceRoot string) ([]Change, map[string][]byte, []string, error) {
+func diffTrees(freshRoot, baseRoot, serviceRoot string) ([]Change, map[string][]byte, []string, error) {
 	var (
 		changes  []Change
 		warnings []string
 		next     = map[string][]byte{}
 	)
+
+	// 三方合并要 git;没有就整体退回两方,只告警一次
+	gitPath := ""
+	if baseRoot != "" {
+		if p, err := exec.LookPath("git"); err == nil {
+			gitPath = p
+		} else {
+			warnings = append(warnings, "git not found; comparing without a base (three-way merge needs git merge-file)")
+		}
+	}
 
 	err := filepath.WalkDir(freshRoot, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
@@ -448,6 +589,34 @@ func diffTrees(freshRoot, serviceRoot string) ([]Change, map[string][]byte, []st
 		}
 		current = normalize(slashRel, current)
 
+		// 有 base 且这个文件在 base 里也有:三方合并。
+		// base 里没有(模板在 base 之后才加的文件,而服务里已经有了)就退回两方。
+		if gitPath != "" {
+			base, berr := os.ReadFile(filepath.Join(baseRoot, rel))
+			if berr == nil {
+				res, merr := merge3(gitPath, current, normalize(slashRel, base), fresh)
+				if merr != nil {
+					return fmt.Errorf("%s: %w", slashRel, merr)
+				}
+				if res.Conflicts > 0 {
+					changes = append(changes, Change{
+						Path: slashRel, Kind: ChangeConflict,
+						Blocked: fmt.Sprintf("%d conflict(s): template and service changed the same lines; resolve by hand (see --diff)", res.Conflicts),
+					})
+					next[slashRel] = res.Merged
+					return nil
+				}
+				want := normalize(slashRel, res.Merged)
+				if !bytes.Equal(want, current) {
+					changes = append(changes, Change{Path: slashRel, Kind: ChangeModified})
+					next[slashRel] = want
+				}
+				return nil
+			} else if !os.IsNotExist(berr) {
+				return berr
+			}
+		}
+
 		merged, warns := carryAnchors(slashRel, string(fresh), string(current))
 		warnings = append(warnings, warns...)
 		// 搬完接线再过一遍 gofmt:插入的位置可能让 import 顺序或对齐变了
@@ -457,7 +626,7 @@ func diffTrees(freshRoot, serviceRoot string) ([]Change, map[string][]byte, []st
 			c := Change{Path: slashRel, Kind: ChangeModified}
 			if legacyAnchorFile(slashRel, fresh, current) {
 				c.Blocked = "template has +co:anchor here but this file has none (generated before anchors existed); " +
-					"its wiring cannot be carried over — add the anchor lines by hand, then rerun"
+					"its wiring cannot be carried over — add the anchor lines by hand, or give a base (--base-ref), then rerun"
 			}
 			changes = append(changes, c)
 			next[slashRel] = want
