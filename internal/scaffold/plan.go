@@ -130,6 +130,13 @@ func NewPlan(src Source, m *manifest.Manifest, opts Options) (*Plan, error) {
 		return nil, fmt.Errorf("--keep-example requires one of feature(s) %s, but none is enabled",
 			strings.Join(m.Example.NeedsAny, ", "))
 	}
+	// 示例资源的接线(NewSearchService, / handler 参数 / 注册块)在模板里标的是
+	// +co:example,裁剪时按 feature 名查表。example 不是 manifest 里的 feature,
+	// 不放进集合它就永远被当「未启用」裁掉 —— 曾经的表现:--keep-example 留下了
+	// biz/data/service 三个文件,却没有任何地方 provide 或注册它们,go build 照样绿。
+	if opts.KeepExample {
+		set[manifest.ExampleMarker] = true
+	}
 
 	dest, err := filepath.Abs(opts.Dest)
 	if err != nil {
@@ -253,12 +260,18 @@ func planDeletes(m *manifest.Manifest, set manifest.FeatureSet, keepExample bool
 	}
 	add(m.DroppedFiles(set)...)
 	add(layout.Drop...)
+	// 根包在这个布局下由仓库根提供,服务内的副本删掉;导入改写见 applyRenames
+	add(layout.RootPackages...)
 
-	// keep 优先级最高,放在最后减掉。models/db.go 就属于这类:
+	// keep 放在所有「按 feature/示例算出来的删除」之后减掉。models/db.go 就属于这类:
 	// 它按目录归在示例资源里,但公共的 data 层依赖它。
 	for _, k := range m.Example.Keep {
 		delete(seen, path.Clean(k))
 	}
+
+	// exclude 是模板自身的元数据(TODO.md 这类改造记录),压过 keep:
+	// 「无论如何不要」不该被任何保留规则推翻。manifest 加载时已保证它与 keep 不重叠。
+	add(m.Exclude...)
 
 	out := make([]string, 0, len(seen))
 	for p := range seen {

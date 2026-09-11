@@ -97,14 +97,28 @@ func isText(data []byte) bool {
 	return !bytes.ContainsRune(data, 0) && utf8.Valid(data)
 }
 
-// PathSkipper 返回一个跳过指定顶层目录/文件的判断函数。
+// localMetadata 是操作系统/编辑器落在目录里的本地文件,不是模板内容。
+//
+// 用 --template-dir 指向本机 checkout 时,Finder 打开过的目录里会有 .DS_Store;
+// 不过滤的话它会被原样拷进生成物,upgrade 也会把它报成 added。
+var localMetadata = map[string]bool{
+	".DS_Store":   true,
+	"Thumbs.db":   true,
+	"desktop.ini": true,
+}
+
+func isLocalMetadata(base string) bool {
+	return localMetadata[base] || strings.HasSuffix(base, ".swp") || strings.HasSuffix(base, "~")
+}
+
+// PathSkipper 返回一个跳过指定顶层目录/文件的判断函数;本地元数据文件在任何层级都跳过。
 func PathSkipper(names ...string) func(rel string) bool {
 	set := make(map[string]bool, len(names))
 	for _, n := range names {
 		set[filepath.FromSlash(n)] = true
 	}
 	return func(rel string) bool {
-		if set[rel] {
+		if set[rel] || isLocalMetadata(filepath.Base(rel)) {
 			return true
 		}
 		// 顶层目录被跳过时,其下所有内容一并跳过

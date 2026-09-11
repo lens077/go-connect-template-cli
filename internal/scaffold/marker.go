@@ -27,12 +27,22 @@ import (
 //
 // 裁剪后的输出里不留任何 begin/end/行标记 —— 生成的项目是给人读的,
 // 满屏 +co: 注释只会碍事。锚点是唯一的例外:它要留着给后续 resource add 用。
+//
+// Markdown 借用 HTML 注释 <!-- +co:x -->:块标记独占一行,行标记放行尾;
+// 必须以 --> 闭合,否则不当标记。这样生成物的 README 也只保留所选 feature 的段落。
 
 const (
 	markerPrefix = "+co:"
 	beginToken   = "+co:begin"
 	endToken     = "+co:end"
 	anchorToken  = "+co:anchor"
+)
+
+// markdownPrefix / markdownClose 是 Markdown 借用的 HTML 注释。
+// 其它语言都是行注释、没有闭合;Markdown 是唯一需要在解析前把闭合摘掉的类型。
+const (
+	markdownPrefix = "<!--"
+	markdownClose  = "-->"
 )
 
 // commentPrefixFor 按扩展名给出行注释前缀。
@@ -48,6 +58,9 @@ func commentPrefixFor(path string) string {
 		return "#"
 	case ".sql":
 		return "--"
+	case ".md":
+		// 渲染后不可见,模板 README 照常阅读;生成物只留所选 feature 的段落。
+		return markdownPrefix
 	}
 	// 无扩展名的按文件名认
 	switch filepath.Base(path) {
@@ -145,6 +158,15 @@ func classify(body, prefix string) (markerKind, [][]string) {
 		return markerNone, nil
 	}
 
+	// Markdown 标记必须以 --> 闭合。先摘掉闭合,后面的逻辑就与行注释语言完全一致。
+	// 没闭合的 `<!-- +co:x` 不当标记(多半是写漏了),按普通文本原样保留。
+	if prefix == markdownPrefix {
+		if !strings.HasSuffix(body, markdownClose) {
+			return markerNone, nil
+		}
+		body = strings.TrimSpace(strings.TrimSuffix(body, markdownClose))
+	}
+
 	// begin/end/anchor 必须独占一行:它们前面只能有注释前缀。
 	// 不允许 `foo() // +co:begin x` 这种写法 —— 那样删块时会把 foo() 一起带走,
 	// 而作者多半只是想标一行。
@@ -213,6 +235,13 @@ func stripLineMarker(text, prefix string) string {
 	if idx < 0 {
 		return text
 	}
+	// Markdown: `<!-- +co:x -->` 整段注释都是为标记而写的,连闭合一起摘掉。
+	// 下面「注释只剩前缀则删注释」的通用逻辑随后会把 <!-- 也去掉。
+	if prefix == markdownPrefix {
+		if c := strings.LastIndex(text, markdownClose); c > idx {
+			text = strings.TrimRight(text[:c], " \t")
+		}
+	}
 	head := strings.TrimRight(text[:idx], " \t")
 
 	// 注释里只剩前缀,说明这条注释是纯粹为标记而写的,一并删掉
@@ -236,6 +265,9 @@ func InsertAtAnchorOnce(path, content, anchor, text string) (string, bool, error
 		return "", false, fmt.Errorf("%s: unknown comment syntax, cannot insert at anchor %q", path, anchor)
 	}
 	want := prefix + " " + anchorToken + " " + anchor
+	if prefix == markdownPrefix {
+		want += " " + markdownClose
+	}
 
 	lines := splitLines(content)
 	for i, ln := range lines {

@@ -35,22 +35,39 @@ var groupFlags = []struct {
 }
 
 type newOptions struct {
-	tmpl templateFlags
+	tmpl   templateFlags
+	render renderFlags
 
-	module      string
-	dir         string
-	layout      string
-	serviceName string
-	features    []string
+	module   string
+	dir      string
+	layout   string
+	features []string
 
 	keepExample bool
 	noResource  bool
 	dryRun      bool
 	yes         bool
+}
 
+// renderFlags 是「生成时填进模板、之后不再有任何地方记录」的渲染参数。
+//
+// co new 和 co upgrade 必须共用同一份默认值:upgrade 要重新生成一份参考副本
+// 来比对,这几个值对不上,monorepo 的 Makefile 每次都会报 modified,
+// --write 还会把 REGISTER / CONSUL_ADDR 抹成空串。
+// 生成时传了非默认值的,upgrade 时要再传一遍(产物里没有存)。
+type renderFlags struct {
+	serviceName     string
 	dockerRegistry  string
 	dockerNamespace string
 	consulAddr      string
+}
+
+func (r *renderFlags) register(cmd *cobra.Command) {
+	f := cmd.Flags()
+	f.StringVar(&r.serviceName, "service-name", "", "服务注册名,默认 <name>-service")
+	f.StringVar(&r.dockerRegistry, "docker-registry", "ccr.ccs.tencentyun.com", "镜像仓库地址(monorepo)")
+	f.StringVar(&r.dockerNamespace, "docker-namespace", "sumery", "镜像命名空间(monorepo)")
+	f.StringVar(&r.consulAddr, "consul-addr", "consul.app.com", "服务注册用的 Consul 地址(monorepo)")
 }
 
 func newNewCmd() *cobra.Command {
@@ -77,16 +94,12 @@ func newNewCmd() *cobra.Command {
 	f.StringVarP(&o.module, "module", "m", "", "目标 module 路径")
 	f.StringVarP(&o.dir, "dir", "d", "", "输出目录,默认 ./<name>(monorepo 默认当前目录)")
 	f.StringVarP(&o.layout, "layout", "l", "", "目录布局:standalone | monorepo")
-	f.StringVar(&o.serviceName, "service-name", "", "服务注册名,默认 <name>-service")
 	f.StringSliceVar(&o.features, "feature", nil, "直接按名字启用 feature,可重复")
 	f.BoolVar(&o.keepExample, "keep-example", false, "保留模板自带的示例资源")
 	f.BoolVar(&o.noResource, "no-resource", false, "只出骨架,不生成资源代码")
 	f.BoolVar(&o.dryRun, "dry-run", false, "只打印将要执行的操作,不落盘")
 	f.BoolVarP(&o.yes, "yes", "y", false, "不交互,未指定项一律用默认值")
-
-	f.StringVar(&o.dockerRegistry, "docker-registry", "ccr.ccs.tencentyun.com", "镜像仓库地址(monorepo)")
-	f.StringVar(&o.dockerNamespace, "docker-namespace", "sumery", "镜像命名空间(monorepo)")
-	f.StringVar(&o.consulAddr, "consul-addr", "consul.app.com", "服务注册用的 Consul 地址(monorepo)")
+	o.render.register(cmd)
 
 	// 分组 flag 的值不绑到结构体上,统一由 collectPresets 从 cmd.Flags() 读:
 	// 它要区分「传了 none」和「没传」,而这个区别只有 Flags().Changed() 知道
@@ -166,12 +179,12 @@ func runNew(cmd *cobra.Command, name string, o *newOptions) error {
 		Dest:            dir,
 		Layout:          layout,
 		Features:        dedupe(features),
-		ServiceName:     o.serviceName,
+		ServiceName:     o.render.serviceName,
 		KeepExample:     o.keepExample,
 		NoResource:      o.noResource,
-		DockerRegistry:  o.dockerRegistry,
-		DockerNamespace: o.dockerNamespace,
-		ConsulAddr:      o.consulAddr,
+		DockerRegistry:  o.render.dockerRegistry,
+		DockerNamespace: o.render.dockerNamespace,
+		ConsulAddr:      o.render.consulAddr,
 	})
 	if err != nil {
 		return err

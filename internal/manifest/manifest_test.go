@@ -1,6 +1,7 @@
 package manifest
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -126,6 +127,81 @@ func TestLoad(t *testing.T) {
 	assert.Equal(t, "postgres", m.Features["postgres"].Name)
 	assert.Equal(t, "database", m.Groups["database"].Name)
 	assert.Equal(t, "standalone", m.Layouts["standalone"].Name)
+}
+
+func TestLoadVersionThreeExclude(t *testing.T) {
+	v3 := strings.Replace(minimal, "version: 1", "version: 3", 1)
+
+	t.Run("parses exclude", func(t *testing.T) {
+		m := mustLoad(t, v3+"\nexclude: [TODO.md, docs/template-internals.md]\n")
+		assert.Equal(t, []string{"TODO.md", "docs/template-internals.md"}, m.Exclude)
+	})
+
+	t.Run("rejected on version < 3", func(t *testing.T) {
+		// KnownFields 打开着,新字段对旧 CLI 是错误而非忽略;
+		// 版本号的作用就是把「未知字段 exclude」变成「请升级 co」这句人话
+		_, err := load(t, minimal+"\nexclude: [TODO.md]\n")
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "version >= 3")
+	})
+
+	t.Run("clash with feature files is a contradiction", func(t *testing.T) {
+		_, err := load(t, v3+"\nexclude: [internal/data/db_postgres.go]\n")
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "also declared by feature postgres")
+	})
+
+	t.Run("clash with example keep is a contradiction", func(t *testing.T) {
+		_, err := load(t, v3+"\nexclude: [internal/data/models/db.go]\n")
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "also declared by example.keep")
+	})
+
+	t.Run("glob is not supported", func(t *testing.T) {
+		_, err := load(t, v3+"\nexclude: ['docs/*.md']\n")
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "without glob")
+	})
+}
+
+func TestLoadVersionThreeRootPackages(t *testing.T) {
+	const layouts = `
+layouts:
+  standalone:
+    service_dir: "."
+    proto_dir: api
+    service_module: "{{.Module}}"
+    go_mod: true
+  monorepo:
+    service_dir: backend/services/{{.Name}}
+    proto_dir: backend/api
+    service_module: "{{.Module}}/services/{{.Name}}"
+    go_mod: false
+    root_packages: [constants]
+`
+	base := "version: %d\nmodule: m\nfeatures:\n  x: {title: X, group: g}\ngroups:\n  g: {title: G, members: [x]}\n"
+
+	t.Run("parses", func(t *testing.T) {
+		m := mustLoad(t, fmt.Sprintf(base, 3)+layouts)
+		assert.Equal(t, []string{"constants"}, m.Layouts["monorepo"].RootPackages)
+		assert.Nil(t, m.Layouts["standalone"].RootPackages)
+	})
+
+	t.Run("rejected on version < 3", func(t *testing.T) {
+		_, err := load(t, fmt.Sprintf(base, 2)+layouts)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "version >= 3")
+	})
+
+	t.Run("must be a top-level directory name", func(t *testing.T) {
+		// 导入改写按 <module>/<pkg> 做前缀,带路径分隔或 glob 会匹配到别的包
+		for _, bad := range []string{"internal/pkg", "constants/*", ".", ""} {
+			_, err := load(t, strings.Replace(fmt.Sprintf(base, 3)+layouts,
+				"root_packages: [constants]", fmt.Sprintf("root_packages: [%q]", bad), 1))
+			require.Error(t, err, "%q", bad)
+			assert.Contains(t, err.Error(), "top-level directory name")
+		}
+	})
 }
 
 func TestLoadVersionTwoExampleNeedsAny(t *testing.T) {

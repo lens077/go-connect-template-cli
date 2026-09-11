@@ -19,6 +19,11 @@
 模板与 CLI 之间唯一的契约是模板仓库里的 `.co/manifest.yaml`。
 `co` 里不写死任何文件路径 —— 模板挪一个文件,改 manifest 即可,不必跟着发一版 CLI。
 
+manifest 有版本号。字段解析是严格的(拼错即报错),所以**新增顶层字段必须升版本**,
+旧 CLI 遇到新版本会提示「升级 co 或钉住兼容的模板 ref」而不是报一个莫名的未知字段。
+当前支持 1–3:v2 加了 `example.needs_any` 与 `|` 或标记;v3 加了顶层 `exclude`
+(模板自身的元数据如 `TODO.md`,无条件不进生成物;精确路径,不支持 glob,与 feature files / keep 重叠即报错)。
+
 ### `+co:` 标记
 
 标记是各语言里合法的注释,所以模板照常编译。三种形式:
@@ -70,6 +75,7 @@ go build -ldflags "-X github.com/lens077/go-connect-template-cli/internal/cli.Ve
 |---|---|
 | `co new <name>` | 生成一个新服务 |
 | `co resource add <name>` | 在已有服务里再加一套资源 |
+| `co upgrade [dir]` | 比对已生成的服务与模板新版,可选写回 |
 | `co proto add <path>` | 按约定布局新建一个 `.proto` |
 | `co proto gen <path> -t <dir>` | 按已有 proto 生成 service/biz/data 三层示例 |
 | `co proto server <path>` | 由已有 service 生成 Handler 骨架 |
@@ -135,6 +141,54 @@ go build ./...
 migration 往下排（`00001_carts.sql` → `00002_orders.sql`）。sqlc 按文件名排序读整个目录，
 序号同时决定迁移与建表顺序。新表引用老表时，排在前面会让外键建不起来。不带前缀的旧文件
 不参与计数。`queries/` 不加前缀：sqlc 读查询没有顺序语义。
+
+### `co upgrade`
+
+`co new` 是一次性的：生成完之后模板继续演进，已生成的服务不会跟着动，同一份基础设施
+代码在各个服务里各自漂移。`upgrade` 用同样的身份（name / module / layout）和反推出来的
+feature 重新生成一份干净副本，逐文件比对。产物里不埋版本号或状态文件——那种状态一旦
+和实际代码对不上（比如用户手动改过），后续所有决策都建立在假事实上。
+
+```shell
+cd cart
+co upgrade                    # 只报告:added / modified,并标出 --write 会怎么处理
+co upgrade --diff             # 连具体改了哪几行一起看
+co upgrade --write            # 只写 added(模板新增、服务里没有的文件)
+co upgrade --write-modified   # 连 modified 一起写;先 --diff 看过再开
+co upgrade --only Makefile --only internal/server/server.go   # 只写点名的文件
+```
+
+比对规则：
+
+- 只比骨架与基础设施。业务资源（proto / biz / data / service）生成之后就归你了，不参与。
+- `+co:anchor` 段里模板没有的行（`NewXxx,`、`mux.Handle(...)`、手写的 provider）视为服务
+  自己的内容，比对前先搬进参考副本，写回时原样保留。模板删掉某个锚点时会告警而不是静默丢掉接线。
+- 只增改不删。模板删掉的文件不会跟着删——判断「这个文件是模板留下的还是你自己加的」
+  需要生成时的状态，而那份状态刻意没有存。
+- `go.mod` / `go.sum` / `*.pb.go` / `*.connect.go` / `internal/data/models/` 是 hook
+  产物，不参与比对；写了 `.proto` / `.sql` 之后「下一步」会提示重新生成。
+- 生成时传过 `--service-name` / `--docker-registry` / `--docker-namespace` / `--consul-addr`
+  的，`upgrade` 要再传一遍。产物里没有记录这些值；不传就按默认值渲染，monorepo 的 `Makefile`
+  会因此报 modified（差异可见，不会静默写掉）。
+
+写回按风险分层。「git 工作区干净」只保证写坏了能撤销，保证不了「这个文件完全属于模板」——
+已经 commit 的业务定制 git status 看不见：
+
+| 层 | 什么 | `--write` | `--write-modified` | `--only` 点名 |
+|---|---|---|---|---|
+| added | 模板新增、服务里没有 | 写 | 写 | 写 |
+| modified | 两边都有但不同 | 不写 | 写 | 写 |
+| blocked | 模板带 `+co:anchor` 而服务里没有（锚点机制之前生成的 legacy 文件） | 不写 | 不写 | 不写 |
+
+- blocked 的文件盖上去会抹掉接线且 `go build` 不报错（没人引用的构造函数不是错误）。
+  出路是先手工补上锚点行（照模板同名文件的位置），再重跑——之后接线就能被搬运。
+- 同一个 Go 包是一个编译单元：模板把 `data.go` 拆成 `data.go + cache_redis.go` 时，只写
+  added 的 `cache_redis.go` 会 `redeclared`。所以同包里有 blocked 的 Go 文件跟着 blocked，
+  added 的 Go 文件同包有未选中的 modified 时跟着跳过；列表里会标出原因。
+- 写入全部成功或全部不写：先落到服务目录下的暂存目录，再逐个 rename，失败即回滚。
+- `--allow-dirty` 只跳过 git 检查，不解锁任何一层。
+
+一个文件和模板不一样，可能是模板演进了，也可能是你故意改的，`co` 分辨不了，所以默认只报告。
 
 ### `co proto`
 

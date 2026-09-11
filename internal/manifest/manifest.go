@@ -8,6 +8,7 @@ package manifest
 import (
 	"fmt"
 	"os"
+	"path"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -38,12 +39,21 @@ type Manifest struct {
 	Layouts      map[string]Layout  `yaml:"layouts"`
 	Hooks        Hooks              `yaml:"hooks"`
 	Tools        []Tool             `yaml:"tools"`
+	// Exclude 是模板自身的元数据(改造记录、维护文档),任何生成物都不要。
+	// 精确相对路径,不支持 glob;与 feature files / example keep 重叠视为矛盾,加载即报错。
+	// 它压过 keep:「无论如何不要」不该被「示例里要留」推翻。
+	Exclude []string `yaml:"exclude"`
 }
 
 // Placeholders 是模板里需要按目标服务替换掉的字面量。
 type Placeholders struct {
 	ServiceName string `yaml:"service_name"`
 }
+
+// ExampleMarker 是示例资源接线在 +co: 标记里用的名字(`// +co:example`)。
+// 它不是 manifest 里的 feature,而是固定契约:--keep-example 时由 CLI 放进
+// FeatureSet,标记的行才会留下;不写死一个名字,模板与 CLI 就没有共同语言。
+const ExampleMarker = "example"
 
 // Example 描述模板自带的示例资源。co new 默认把它整套删掉。
 type Example struct {
@@ -125,6 +135,11 @@ type Layout struct {
 	Features []string `yaml:"features"`
 	// Drop 是该布局下要删掉的文件/目录(由根仓库统一提供的那些)。
 	Drop []string `yaml:"drop"`
+	// RootPackages 是该布局下由仓库根提供的 Go 包(模板顶层目录名,如 constants)。
+	// 生成时删掉服务内的副本,并把导入路径从 <ServiceModule>/<pkg> 改成 <Module>/<pkg>。
+	// 只写 drop 不够:副本删了,import 仍指向 services/<name>/<pkg>,编译不过;
+	// 不删又会让每个服务各带一份影子副本,和根上那份漂移。manifest v3 起。
+	RootPackages []string `yaml:"root_packages"`
 	// SharedProto 是 api/ 下由整个仓库共用、而非本服务独有的子树名。
 	// 搬 proto 时若目标已存在,保留目标那份而不是报冲突 —— 同一个 monorepo 里
 	// 生成第二个服务时,这些子树必然已经被第一个服务带进去了。
@@ -203,7 +218,14 @@ func Load(repoRoot string) (*Manifest, error) {
 
 const (
 	// SupportedVersion 是本 CLI 能处理的最新 manifest 版本。
-	SupportedVersion = 2
+	//
+	// 版本史:
+	//   1  初版
+	//   2  example.needs_any;+co: 标记支持竖线「或」
+	//   3  顶层 exclude(模板元数据不进生成物);layouts.*.root_packages(monorepo 下
+	//      由仓库根提供的 Go 包)。KnownFields 打开着,新字段对旧 CLI
+	//      不是「忽略」而是「未知字段」错误,所以必须走版本号让旧 CLI 给出明确提示。
+	SupportedVersion = 3
 	minVersion       = 1
 )
 
@@ -232,6 +254,16 @@ func (m *Manifest) validate() error {
 		for _, f := range l.Features {
 			if _, ok := m.Features[f]; !ok {
 				return fmt.Errorf("layout %q: features refers to unknown feature %q", l.Name, f)
+			}
+		}
+		if len(l.RootPackages) > 0 && m.Version < 3 {
+			return fmt.Errorf("layout %q: root_packages requires manifest version >= 3 (got %d)", l.Name, m.Version)
+		}
+		for _, pkg := range l.RootPackages {
+			// 必须是单段顶层目录名:导入改写按 <module>/<pkg> 做前缀匹配,
+			// 带斜杠或 . 会让前缀匹配到别的包
+			if pkg == "" || pkg == "." || strings.ContainsAny(pkg, "/\\*") {
+				return fmt.Errorf("layout %q: root_packages entry %q must be a top-level directory name", l.Name, pkg)
 			}
 		}
 	}
@@ -296,6 +328,29 @@ func (m *Manifest) validate() error {
 			if _, ok := m.Layouts[h.WhenLayout]; !ok {
 				return fmt.Errorf("hook %q: when_layout refers to unknown layout %q", h.Name, h.WhenLayout)
 			}
+		}
+	}
+
+	// exclude 与 feature files / example keep 重叠是作者写矛盾了:
+	// 一边说「这个 feature 拥有它」,一边说「永远不要」。静默选边会让另一处声明变成死代码。
+	owned := map[string]string{}
+	for _, f := range m.SortedFeatures() {
+		for _, file := range f.Files {
+			owned[path.Clean(file)] = "feature " + f.Name
+		}
+	}
+	for _, k := range m.Example.Keep {
+		owned[path.Clean(k)] = "example.keep"
+	}
+	if len(m.Exclude) > 0 && m.Version < 3 {
+		return fmt.Errorf("exclude requires manifest version >= 3 (got %d)", m.Version)
+	}
+	for _, ex := range m.Exclude {
+		if ex == "" || path.IsAbs(ex) || strings.Contains(ex, "*") {
+			return fmt.Errorf("exclude: %q must be a non-empty relative path without glob", ex)
+		}
+		if owner, clash := owned[path.Clean(ex)]; clash {
+			return fmt.Errorf("exclude: %q is also declared by %s; remove one", ex, owner)
 		}
 	}
 

@@ -131,6 +131,42 @@ func TestPrune(t *testing.T) {
 			want: "api_key: ''\n",
 		},
 		{
+			name: "Markdown 块标记:HTML 注释,选中的留、未选的删,标记行本身消失",
+			path: "README.md",
+			set:  set("meilisearch"),
+			in: "- 缓存\n<!-- +co:begin elasticsearch -->\n- 搜索: ES\n<!-- +co:end -->\n" +
+				"<!-- +co:begin meilisearch -->\n- 搜索: Meili\n<!-- +co:end -->\n- 认证\n",
+			want: "- 缓存\n- 搜索: Meili\n- 认证\n",
+		},
+		{
+			name: "Markdown 行标记:注释整段摘掉,正文保留",
+			path: "README.md",
+			set:  set("elasticsearch"),
+			in:   "├── search_elasticsearch.go # adapter <!-- +co:elasticsearch -->\n├── search_meilisearch.go # adapter <!-- +co:meilisearch -->\n",
+			want: "├── search_elasticsearch.go # adapter\n",
+		},
+		{
+			name: "Markdown 块标记支持「或」表达式",
+			path: "README.md",
+			set:  set("elasticsearch"),
+			in:   "<!-- +co:begin elasticsearch|meilisearch -->\n检索段落\n<!-- +co:end -->\n",
+			want: "检索段落\n",
+		},
+		{
+			name: "Markdown 未闭合的 <!-- +co:x 不算标记,原样保留",
+			path: "README.md",
+			set:  set(),
+			in:   "a\n<!-- +co:begin redis\nb\n",
+			want: "a\n<!-- +co:begin redis\nb\n",
+		},
+		{
+			name: "Markdown 锚点原样保留",
+			path: "README.md",
+			set:  set(),
+			in:   "a\n<!-- +co:anchor docs -->\nb\n",
+			want: "a\n<!-- +co:anchor docs -->\nb\n",
+		},
+		{
 			name: "SQL 用 -- 前缀",
 			path: "q.sql",
 			set:  set(),
@@ -264,8 +300,8 @@ func TestCommentPrefixFor(t *testing.T) {
 		"Dockerfile":        "#",
 		".gitignore":        "#",
 		"deploy/Dockerfile": "#",
-		"a.md":              "",
-		"a.proto":           "", // proto 刻意不参与裁剪:protoc 会把注释搬进生成物
+		"a.md":              "<!--", // Markdown 借 HTML 注释,闭合 --> 由 classify 处理
+		"a.proto":           "",     // proto 刻意不参与裁剪:protoc 会把注释搬进生成物
 		"a.ts":              "",
 	}
 	for path, want := range cases {

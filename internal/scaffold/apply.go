@@ -161,10 +161,20 @@ func (p *Plan) applyRenames(root string) error {
 	// api/search)导入 <ServiceModule>/api/search/v1,而文件实际在 <Module>/api/search/v1,
 	// go build 报 "no required module provides package"。
 	// standalone 下 Module == ServiceModule,这条等价于通用规则,无副作用。
+	//
+	// layouts.*.root_packages 与 api/ 同理:副本已经从服务里删掉,导入必须指向仓库根。
+	// 少了这条的症状是 monorepo 生成物 import <Module>/services/<name>/constants,
+	// 而那个目录不存在。
 	reps := []Replacement{
 		{Old: p.Manifest.Module + "/api", New: p.Opts.Module + "/api"},
-		{Old: p.Manifest.Module, New: p.ServiceModule},
 	}
+	for _, pkg := range p.Layout.RootPackages {
+		reps = append(reps, Replacement{
+			Old: p.Manifest.Module + "/" + pkg,
+			New: p.Opts.Module + "/" + pkg,
+		})
+	}
+	reps = append(reps, Replacement{Old: p.Manifest.Module, New: p.ServiceModule})
 	if ph := p.Manifest.Placeholders.ServiceName; ph != "" {
 		reps = append(reps, Replacement{Old: ph, New: p.Data().ServiceName})
 	}

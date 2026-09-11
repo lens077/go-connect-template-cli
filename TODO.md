@@ -199,3 +199,42 @@ gofmt ✓   go build ✓   go vet ✓   go test ./... ✓(完整,非 -short)
 - [x] 打首个发布 tag `v0.1.0`；发布级验收用 `--template-ref v0.1.0` 从远端模板生成双 adapter 项目
 - [x] module path 改为 `github.com/lens077/go-connect-template-cli`：仓库归并时只改了远端名，module 仍指向已不存在的 `co-cli`，`go install ...@v0.1.0` 拉不到。改完打 `v0.1.1`，`go install ...@v0.1.1` 作为验收
 - [ ] `v0.1.0` 的 module path 已损坏，不可 `go install`；不删 tag（已推送，删了会破坏 proxy 缓存一致性），文档只推荐 `v0.1.1+`
+
+### 16. Markdown 裁剪与生成物测试
+
+- [x] `+co:` 标记支持 Markdown：`.md` 用 `<!-- +co:x -->`，必须以 `-->` 闭合，未闭合不当标记；隔离检查扩到 `.md`
+- [x] 生成矩阵每格在 `go build` 后追加 `go test -count=1 ./...`：生成物自带的 fx 依赖图校验和 adapter 契约测试必须真跑。`go build` 看不见 fx 图是否闭合，曾有一次所有生成服务起不来而矩阵全绿
+- [x] `assertFeatureTestFiles`：按 manifest 数据驱动核对 `_test.go` 去留——选中 feature 的必须在，未选的必须不在；以后给 adapter 补测试只需在 manifest 登记
+- [x] manifest v3：顶层 `exclude` 列表，模板自身元数据（`TODO.md`）无条件进删除清单并压过 `example.keep`。精确路径、无 glob；与 feature files / keep 重叠视为矛盾，加载即报错。`KnownFields` 打开着，新字段对旧 CLI 是错误而非忽略，所以必须走版本号——v1/v2 里出现 `exclude` 也报「version >= 3」
+- [x] 矩阵加 `assertExcluded`（生成物里不得有）与 plan 断言（必在 `Deletes` 里），都从 manifest 读，数据驱动
+- [ ] 模板已升到 manifest v3，需要 CLI 发新版（`v0.2.0`：contract 变更）后模板才能 push，否则 `v0.1.1` 的 CLI 拉最新模板会报版本不支持
+
+### 17. `co upgrade`
+
+- [x] `co upgrade [dir]`：用同样身份（name/module/layout）+ 反推的 feature 生成参考副本到临时目录，逐文件比对；默认只报告，`--diff` 打 diff，`--write` 写回并要求 git 干净（`--allow-dirty` 跳过）。只增改不删；hook 产物（`go.mod`/`go.sum`/`*.pb.go`/`*.connect.go`/`models/`）不参与；`.go` 两侧先 gofmt 再比
+- [x] **根因修复：锚点接线被盖掉**。参考副本是 `NoResource` 的，锚点上方是空的；真实服务那里堆着 `co new` / `resource add` / `proto gen` 插进去的 `NewCartUseCase,` / `mux.Handle(...)`。原实现刚 `co new` 完立刻 `upgrade` 就报 biz/data/server/service 四处假差异，`--write` 把接线抹掉且 `go build` 照样绿（无人引用的构造函数不报错）——服务不再注册 handler，静默失败。单测没抓到是因为 fixture 也用了 `NoResource: true`，与实现盲区完全重合
+- [x] 修法 `upgrade_anchor.go`：约定「锚点上方那段属于服务」。按锚点分段，对段做 LCS 对齐，取 current 里紧贴锚点、未对上模板的尾部连续行搬进副本（用 LCS 而非「这一行模板里出现过」，否则 `)` 这类到处都有的行会把 `--keep-example` 的多行块拦腰截断）；只取尾部连续段，段中间的未匹配行是模板改了，搬过去会复制旧模板行。分不清时选择保留（结果多一行，diff 可见）而不是丢弃。锚点行本身缩进以服务为准：gofmt 给「只剩一条注释的 `fx.Provide(`」少排一级，之后再 gofmt 也不改回来。模板删掉锚点 → `Warnings`，CLI 先于差异列表打印
+- [x] 比对、`--diff`、`--write` 三处用同一份合并后的内容（`Upgrade.next`），不再回头读副本——否则「看到的」和「写进去的」不是一份
+- [x] 第二个同类根因：monorepo overlay `Makefile` 由 `DockerRegistry/DockerNamespace/ConsulAddr` 渲染，`PlanUpgrade` 没传就渲染成空串，永远 modified 且 `--write` 会把 `REGISTER`/`CONSUL_ADDR` 抹空。抽出 `renderFlags`（含 `--service-name`）由 `new`/`upgrade` 共用同一份默认值；生成时传过非默认值的 upgrade 要再传一遍（产物不记录），不传则差异可见
+- [x] 测试：fixture 改为真生成资源（含接线）；刚生成零差异（standalone + monorepo）；模板演进 + 手写 provider 同时保留并收敛；多行块不截断；仅尾部段；锚点缩进；锚点缺失告警；渲染参数不一致时 Makefile 可见。e2e：`co new` → `upgrade` 零差异 → 改模板 → `--write` → 接线在、`go build`/`go test` 绿 → 再 `upgrade` 零差异
+- [x] `--keep-example` 真实 e2e：顺带发现 `+co:example` 标记的接线在 `--keep-example` 下也被裁掉（`example` 从未进 FeatureSet，文件留了、接线没了、`go build` 照样绿）。修在 `NewPlan`：`set[manifest.ExampleMarker] = true`。upgrade 侧 `detectKeepExample` 反推后参考副本同样保留示例
+- [ ] 模板改了紧贴锚点的那一行（例如 data.go 锚点上方最后一个 provider 改名）时，结果里新旧两行都在（fx 启动时报 duplicate provide，不是编译错）。这是「宁多不少」的刻意取舍，靠 `--diff` 看见；要根治得记录生成时的模板 ref 做三方合并，与「产物不存状态」的原则冲突，暂不做
+- [ ] monorepo 下 `PlanUpgrade` 要求仓库根有 `go.mod`（`InspectTarget` 反推 module），`co new` 不生成它；没有时报错提示，不猜
+
+### 18. `co upgrade` 对 legacy 服务的安全边界
+
+真实 ecommerce cart（锚点机制之前生成）上验证：原实现报 49 处差异，其中 biz/data/server/service
+四个接线文件是普通 modified，`--write` 一把盖上去接线全没、`go build` 绿。「git 干净」只保证能撤销，
+保证不了「文件完全属于模板」。
+
+- [x] **写回分层**：`--write` 只写 added；`--write-modified` 连 modified；`--only <path>` 点名（点名的 modified 视为已同意，点名不存在的路径报错不静默）。`--allow-dirty` 只跳 git 检查，不解锁任何一层
+- [x] **blocked**：模板这份带 `+co:anchor` 而服务那份一个都没有（`legacyAnchorFile`）→ 任何策略都不写，`--only` 点名也不写。出路是手工补锚点再重跑；e2e 验证补完锚点后接线全部搬运成功
+- [x] **同包耦合**（e2e 才发现）：只写 added 的 `cache_redis.go` 也炸——legacy `data.go`（blocked）里还有 `NewRedisClient`。规则：选中的 Go 文件同包有 blocked → blocked；added 的 Go 文件同包有未选中的 modified → 跳过；modified 同包有未选中的照写（`--only` 的正常用法）。列表里逐文件标原因。之后 legacy cart 默认 `--write` 后 `go build` 绿
+- [x] **原子写入**：先落到服务目录下 `.co-upgrade-*/new`（同文件系统，rename 才原子），旧文件挪到 `old/`，逐个 rename；任一步失败按记录回滚，暂存目录清掉。目标是目录时拒绝（不替用户删树）
+- [x] 纯插入 hunk 在锚点段任何位置都搬（gofmt 会把 `cartv1connect` import 排到 `searchv1connect` 前面，不再紧贴锚点）；替换 hunk 只在紧贴锚点时保留
+- [x] Go 文件里锚点不在 import 块内时不搬 import 行：legacy `data.go` 多出的 `crypto/tls`、`pgx` 被当纯插入搬来，用它们的代码在锚点下方已被模板替换，结果 5 个 "imported and not used"
+- [x] `.DS_Store` / `Thumbs.db` / `*.swp` / `*~` 在拷贝与比对时任何层级都跳过（`PathSkipper`）
+- [x] manifest v3 `layouts.*.root_packages`：monorepo 下 `constants` 由仓库根提供，删副本 + 导入改写 `<Module>/constants`。只写 `drop` 不够（import 仍指向 `services/<name>/constants`）。ecommerce cart 从 48 → 46 处差异，不再把已清掉的影子副本带回来
+- [x] 「下一步」按写入内容变化：写了 `.proto` 提示 `buf generate` / `make api && make conf`，写了 `.sql` 提示 `sqlc generate`
+- [ ] legacy cart 补锚点 + `--write-modified` 后剩两处真实分歧，工具不该替人决定：ecommerce 根 `constants` 缺 `DefaultDBPingTimeout` / `DefaultHealthCheckTimeout`（根包漂移，ecommerce 侧补）；`cart.go` 业务代码用旧的 `*LiveRedis`（业务适配）
+- [ ] 锚点段之外的用户定制（legacy cart 的自定义 health handler、`info meta.AppInfo` 参数）在 `--write-modified` 时按模板版本覆盖，diff 可见。这是 modified 层的定义，不是 bug；把锚点放在自定义块之后可以把它们纳入搬运范围

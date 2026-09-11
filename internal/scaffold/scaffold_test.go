@@ -121,6 +121,11 @@ func TestPlanMatrix(t *testing.T) {
 			assert.Equal(t, "cart", p.Names.Name)
 			assert.IsIncreasing(t, p.Deletes, "Deletes 必须有序且去重,否则 --dry-run 的输出不可复现")
 
+			// 顶层 exclude 无条件进删除清单,不受 feature 选择和 keep-example 影响
+			for _, ex := range m.Exclude {
+				assert.Contains(t, p.Deletes, ex, "exclude 项 %s 必须在删除清单里", ex)
+			}
+
 			// 关掉的 feature,其文件必须出现在删除清单里
 			for _, f := range m.SortedFeatures() {
 				if p.Features.Has(f.Name) {
@@ -414,9 +419,58 @@ func TestGenerateMatrix(t *testing.T) {
 
 			root := filepath.Join(p.Dest, p.ServiceDir)
 			assertSearchAdapterIsolation(t, root, p.Features)
+			assertFeatureTestFiles(t, root, m, p.Features)
+			assertExcluded(t, root, m)
 			goBuild(t, root, src.Root)
+			// 生成物自带的测试必须能跑:fx 依赖图校验(cmd/server)和各 adapter 的契约测试
+			// 都随 feature 走。go build 看不见 fx 图是否闭合,只有这里能抓到。
+			goTest(t, root)
 		})
 	}
+}
+
+// assertFeatureTestFiles 按 manifest 数据驱动地核对 _test.go 的去留:
+// 选中 feature 的测试文件必须在,未选 feature 的必须不在。以后给 adapter 补测试
+// 只需在 manifest 里登记,这条断言自动覆盖。
+func assertFeatureTestFiles(t *testing.T, root string, m *manifest.Manifest, set manifest.FeatureSet) {
+	t.Helper()
+	// 同一个测试文件可能被多个 feature 共有(如 search_catalog_test.go):任一 owner 启用即应保留
+	owners := map[string][]string{}
+	for name, f := range m.Features {
+		for _, file := range f.Files {
+			if strings.HasSuffix(file, "_test.go") {
+				owners[file] = append(owners[file], name)
+			}
+		}
+	}
+	require.NotEmpty(t, owners, "manifest 里没有任何 _test.go:adapter 测试没登记")
+	for file, names := range owners {
+		_, err := os.Stat(filepath.Join(root, file))
+		if set.HasAny(names) {
+			assert.NoErrorf(t, err, "%s 归属 %v,已选中却不在生成物里", file, names)
+		} else {
+			assert.Truef(t, os.IsNotExist(err), "%s 归属 %v,未选中却留在生成物里", file, names)
+		}
+	}
+}
+
+// assertExcluded 核对 manifest 顶层 exclude 的每一项都不在生成物里。
+// 数据驱动:模板往 exclude 里加东西,这条断言自动跟上。
+func assertExcluded(t *testing.T, root string, m *manifest.Manifest) {
+	t.Helper()
+	require.NotEmpty(t, m.Exclude, "模板 manifest 应至少排除 TODO.md 这类自身元数据")
+	for _, ex := range m.Exclude {
+		_, err := os.Stat(filepath.Join(root, ex))
+		assert.Truef(t, os.IsNotExist(err), "exclude 项 %s 不该进入生成物", ex)
+	}
+}
+
+func goTest(t *testing.T, dir string) {
+	t.Helper()
+	cmd := exec.Command("go", "test", "-count=1", "./...")
+	cmd.Dir = dir
+	out, err := cmd.CombinedOutput()
+	require.NoErrorf(t, err, "go test ./... 在 %s 失败:\n%s", dir, out)
 }
 
 // TestGenerateMonorepo 单独一格:monorepo 的 proto 落在仓库根,
@@ -458,6 +512,18 @@ func TestGenerateMonorepo(t *testing.T) {
 	assertFileContains(t, cfgFile, "controlsource.NewKitSource")
 	assertFileContains(t, cfgFile, "kitconfig.FromEnvironment")
 
+	// root_packages 在 monorepo 里由仓库根提供:服务内不能留副本,导入必须指向根。
+	// 曾经的表现:每个服务各带一份 constants 影子副本,与根上那份漂移;upgrade 对
+	// 已清掉副本的服务又把它报成 added 带回来。
+	require.NotEmpty(t, p.Layout.RootPackages, "monorepo 应当声明 root_packages(至少 constants)")
+	for _, pkg := range p.Layout.RootPackages {
+		_, err = os.Stat(filepath.Join(root, pkg))
+		assert.True(t, os.IsNotExist(err), "monorepo 下服务目录不该有 %s/ 副本", pkg)
+		assert.Contains(t, p.Deletes, pkg)
+		assertTreeNotContains(t, root, p.ServiceModule+"/"+pkg)
+	}
+	assertFileContains(t, filepath.Join(root, "cmd", "server", "main.go"), p.Opts.Module+"/constants")
+
 	// 往同一个 monorepo 里再生成一个服务。这是常态 —— 谁都不会只生成一个服务。
 	p2, err := NewPlan(src, m, Options{
 		Name:     "order",
@@ -491,7 +557,11 @@ func buildMonorepo(t *testing.T, src Source, dest string, p *Plan, services []st
 	// 也就是服务目录往上两级。不写死 "backend",布局改了这里跟着变。
 	modRoot := filepath.Dir(filepath.Dir(filepath.Join(dest, p.ServiceDir)))
 
-	for _, f := range []string{"go.mod", "go.sum", "buf.yaml", "buf.lock", "buf.gen.yaml", "third_party"} {
+	// root_packages(如 constants)在 monorepo 里由根仓库提供,服务内副本已删、
+	// 导入已改写到 <Module>/<pkg>;真实仓库里根上有一份,这里从模板搬一份充当
+	rootFiles := append([]string{"go.mod", "go.sum", "buf.yaml", "buf.lock", "buf.gen.yaml", "third_party"},
+		p.Layout.RootPackages...)
+	for _, f := range rootFiles {
 		from, to := filepath.Join(src.Root, f), filepath.Join(modRoot, f)
 		info, err := os.Stat(from)
 		require.NoErrorf(t, err, "模板里没有 %s", f)
@@ -668,7 +738,8 @@ func assertSearchAdapterIsolation(t *testing.T, root string, features manifest.F
 		base := filepath.Base(path)
 		isYAMLExample := strings.HasSuffix(path, ".yaml.example") || strings.HasSuffix(path, ".yml.example")
 		// go.sum 只是下载校验记录,不代表生成物直接依赖或包含对应实现。
-		if ext != ".go" && ext != ".proto" && ext != ".yaml" && ext != ".yml" && !isYAMLExample && base != "go.mod" && base != "Makefile" {
+		// .md 也检查:模板 README 用 <!-- +co:x --> 标记按 adapter 裁剪,文档不该再提另一个。
+		if ext != ".go" && ext != ".proto" && ext != ".yaml" && ext != ".yml" && ext != ".md" && !isYAMLExample && base != "go.mod" && base != "Makefile" {
 			return nil
 		}
 		data, readErr := os.ReadFile(path)
@@ -738,6 +809,24 @@ func assertFileContains(t *testing.T, path, want string) {
 	data, err := os.ReadFile(path)
 	require.NoError(t, err)
 	assert.Contains(t, string(data), want, path)
+}
+
+// assertTreeNotContains 断言整棵树的文本文件里都没有某个字符串。
+func assertTreeNotContains(t *testing.T, root, needle string) {
+	t.Helper()
+	require.NoError(t, filepath.WalkDir(root, func(p string, d os.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return err
+		}
+		data, rerr := os.ReadFile(p)
+		if rerr != nil {
+			return rerr
+		}
+		if isText(data) {
+			assert.NotContains(t, string(data), needle, relTo(root, p))
+		}
+		return nil
+	}))
 }
 
 func relTo(root, path string) string {
