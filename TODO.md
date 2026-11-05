@@ -231,13 +231,13 @@ gofmt ✓   go build ✓   go vet ✓   go test ./... ✓(完整,非 -short)
 - [x] **写回分层**：`--write` 只写 added；`--write-modified` 连 modified；`--only <path>` 点名（点名的 modified 视为已同意，点名不存在的路径报错不静默）。`--allow-dirty` 只跳 git 检查，不解锁任何一层
 - [x] **blocked**：模板这份带 `+co:anchor` 而服务那份一个都没有（`legacyAnchorFile`）→ 任何策略都不写，`--only` 点名也不写。出路是手工补锚点再重跑；e2e 验证补完锚点后接线全部搬运成功
 - [x] **同包耦合**（e2e 才发现）：只写 added 的 `cache_redis.go` 也炸——legacy `data.go`（blocked）里还有 `NewRedisClient`。规则：选中的 Go 文件同包有 blocked → blocked；added 的 Go 文件同包有未选中的 modified → 跳过；modified 同包有未选中的照写（`--only` 的正常用法）。列表里逐文件标原因。之后 legacy cart 默认 `--write` 后 `go build` 绿
-- [x] **原子写入**：先落到服务目录下 `.co-upgrade-*/new`（同文件系统，rename 才原子），旧文件挪到 `old/`，逐个 rename；任一步失败按记录回滚，暂存目录清掉。目标是目录时拒绝（不替用户删树）
+- [x] **原子写入**：先落到服务目录下 `.co-upgrade-*/new`（同文件系统，rename 才原子），旧文件挪到 `old/`，逐个 rename；任一步失败按记录回滚，成功后清掉暂存目录，回滚失败则保留 backup 路径。目标是目录时拒绝（不替用户删树）
 - [x] 纯插入 hunk 在锚点段任何位置都搬（gofmt 会把 `cartv1connect` import 排到 `searchv1connect` 前面，不再紧贴锚点）；替换 hunk 只在紧贴锚点时保留
 - [x] Go 文件里锚点不在 import 块内时不搬 import 行：legacy `data.go` 多出的 `crypto/tls`、`pgx` 被当纯插入搬来，用它们的代码在锚点下方已被模板替换，结果 5 个 "imported and not used"
 - [x] `.DS_Store` / `Thumbs.db` / `*.swp` / `*~` 在拷贝与比对时任何层级都跳过（`PathSkipper`）
 - [x] manifest v3 `layouts.*.root_packages`：monorepo 下 `constants` 由仓库根提供，删副本 + 导入改写 `<Module>/constants`。只写 `drop` 不够（import 仍指向 `services/<name>/constants`）。ecommerce cart 从 48 → 46 处差异，不再把已清掉的影子副本带回来
 - [x] 「下一步」按写入内容变化：写了 `.proto` 提示 `buf generate` / `make api && make conf`，写了 `.sql` 提示 `sqlc generate`
-- [x] 发布链闭合：control-tower `v0.1.6`（HEAD 仅升 kit v0.4.3，工作树 WIP 不带）→ CLI `v0.2.0` → template `v0.2.0`（kit v0.4.3 / control-tower v0.1.6 / manifest v3）→ ecommerce 升 control-tower v0.1.6 并补根 `constants`。验收全部用已发布版本：`go install ...@v0.2.0`、`co new --template-ref v0.2.0`（standalone build/vet/test 绿；monorepo 无 constants 副本、import 指向根）、`co upgrade --template-ref v0.2.0` 零差异、drift 后 `--write` 收敛；control-tower/template 按 tag 浅克隆 `GOWORK=off` build/vet/test 绿
+- [x] 发布链闭合：control-tower `v0.1.6`（HEAD 仅升 kit v0.4.3，工作树 WIP 不带）→ CLI `v0.3.0` → template `v0.2.1`（kit v0.4.3 / control-tower v0.1.6 / manifest v3）→ ecommerce 升 control-tower v0.1.6 并补根 `constants`。验收全部用已发布版本：`go install ...@v0.3.0`、`co new --template-ref v0.2.1`（standalone build/vet/test 绿；monorepo 无 constants 副本、import 指向根）、`co upgrade --template-ref v0.2.1` 零差异、drift 后 `--write` 收敛；control-tower/template 按 tag 浅克隆 `GOWORK=off` build/vet/test 绿
 - [ ] legacy cart 补锚点 + `--write-modified` 后剩两处真实分歧，工具不该替人决定：~~ecommerce 根 `constants` 缺 `DefaultDBPingTimeout` / `DefaultHealthCheckTimeout`~~（已在 ecommerce 侧补）；`cart.go` 业务代码用旧的 `*LiveRedis`（业务适配，留给 ecommerce）
 - [ ] 锚点段之外的用户定制（legacy cart 的自定义 health handler、`info meta.AppInfo` 参数）在 `--write-modified` 时按模板版本覆盖，diff 可见。这是 modified 层的定义，不是 bug；把锚点放在自定义块之后可以把它们纳入搬运范围
 
@@ -253,4 +253,7 @@ gofmt ✓   go build ✓   go vet ✓   go test ./... ✓(完整,非 -short)
 - [x] 第 17 条「紧贴锚点的替换 hunk 新旧两行都留」:有 base 后 git 判为相邻 hunk 冲突,显式而非静默(`TestThreeWayMergeAdjacentToAnchor`)。无 base 维持原行为
 - [x] 第 18 条「锚点段之外的定制被覆盖」:三方合并的 A/B/A 行,保留且不报差异
 - [x] 真实 ecommerce cart `--base-ref v0.1.0`(近似 base):46 → 19 处差异,biz/data/server/service 的 legacy 分歧全部消失(模板自 v0.1.0 没改过它们),2 处 conflict(`main.go`、`data.go`)显式标出;`--write-modified` 后 build/vet 绿
+- [x] 零源码差异时推进 origin 也走 dirty-worktree 检查；origin 写入失败向调用方返回错误，不再静默吞掉元数据失败
+- [x] origin 记录了模板来源时，base 从该来源获取；本地来源缺失直接报错，不从当前模板仓库静默替代
+- [x] 回滚失败时保留 `.co-upgrade-*/old` 备份并返回路径；成功回滚后才清理暂存目录
 - [ ] 存量 10 个服务的精确 base 不存在(旧正则 CLI 生成),`v0.1.0` 是最早的 manifest 期快照。近似 base 的代价:模板在 v0.1.0 之前就改过、而服务没跟上的行,会被当成「用户改的」保留——需要人对着 `--diff` 决定。这是数据问题,不是工具问题

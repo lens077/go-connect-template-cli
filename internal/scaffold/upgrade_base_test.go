@@ -9,6 +9,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/lens077/go-connect-template-cli/internal/manifest"
 )
 
 // 三方合并的四行真值表 + 无 base 回退。
@@ -226,6 +228,28 @@ func TestThreeWayMergeBaseEqualsFresh(t *testing.T) {
 	defer func() { _ = up.Close() }()
 	assert.Equal(t, commit, up.Base)
 	assert.Empty(t, up.Changes)
+}
+
+func TestFetchOptionsForTemplateUsesRecordedSource(t *testing.T) {
+	fallback := FetchOptions{Dir: "/current/template", Repo: "https://current.example/template", CacheDir: "/cache"}
+
+	got, err := fetchOptionsForTemplate("https://recorded.example/template", fallback)
+	require.NoError(t, err)
+	assert.Empty(t, got.Dir)
+	assert.Equal(t, "https://recorded.example/template", got.Repo)
+	assert.Equal(t, fallback.CacheDir, got.CacheDir)
+
+	local := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(local, ".co"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(local, manifest.Path), []byte("version: 1\n"), 0o644))
+	got, err = fetchOptionsForTemplate(local, fallback)
+	require.NoError(t, err)
+	assert.Equal(t, local, got.Dir)
+	assert.Empty(t, got.Repo)
+
+	_, err = fetchOptionsForTemplate(filepath.Join(t.TempDir(), "missing"), fallback)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "--no-base")
 }
 
 func TestOriginRoundTrip(t *testing.T) {

@@ -142,8 +142,13 @@ func runUpgrade(cmd *cobra.Command, dir string, o *upgradeOptions) error {
 
 	if len(up.Changes) == 0 {
 		p.Title("\n已是模板最新状态,无差异")
-		if o.write || o.writeModified {
-			advanceOrigin(p, up, src, o)
+		if o.write || o.writeModified || len(o.only) > 0 {
+			if err := ensureWriteAllowed(up.ServiceRoot, o.allowDirty); err != nil {
+				return err
+			}
+			if err := advanceOrigin(p, up, src, o); err != nil {
+				return err
+			}
 		}
 		return nil
 	}
@@ -209,10 +214,8 @@ func runUpgrade(cmd *cobra.Command, dir string, o *upgradeOptions) error {
 		return nil
 	}
 
-	if !o.allowDirty {
-		if err := requireCleanWorktree(up.ServiceRoot); err != nil {
-			return err
-		}
+	if err := ensureWriteAllowed(up.ServiceRoot, o.allowDirty); err != nil {
+		return err
 	}
 
 	n, err := up.Apply(p, sel)
@@ -224,7 +227,9 @@ func runUpgrade(cmd *cobra.Command, dir string, o *upgradeOptions) error {
 	// 全部差异都写完了,服务就等于模板新版:把 origin 推到新 commit,下次 upgrade 的
 	// base 才是对的。有跳过或拒绝的文件时不推 —— 那些文件还停在旧 base 上
 	if len(sel.Skipped) == 0 && len(sel.Blocked) == 0 {
-		advanceOrigin(p, up, src, o)
+		if err := advanceOrigin(p, up, src, o); err != nil {
+			return err
+		}
 	} else {
 		recordBaseRef(p, up, src, o)
 		if up.Base != "" {
@@ -261,9 +266,9 @@ func runUpgrade(cmd *cobra.Command, dir string, o *upgradeOptions) error {
 
 // advanceOrigin 把 .co-origin.yaml 推到模板当前 commit。
 // 只在「服务已与模板新版一致」时调用;origin 记的是事实,写一个不成立的 commit 比没有更糟。
-func advanceOrigin(p *ui.Printer, up *scaffold.Upgrade, src scaffold.Source, o *upgradeOptions) {
+func advanceOrigin(p *ui.Printer, up *scaffold.Upgrade, src scaffold.Source, o *upgradeOptions) error {
 	if src.Commit == "" || src.Commit == up.Base || o.noBase {
-		return
+		return nil
 	}
 	if err := scaffold.WriteOrigin(up.ServiceRoot, scaffold.Origin{
 		Template: src.Repo,
@@ -272,10 +277,10 @@ func advanceOrigin(p *ui.Printer, up *scaffold.Upgrade, src scaffold.Source, o *
 		Co:       version(),
 		Render:   o.render.params(),
 	}); err != nil {
-		p.Warn("write %s: %v", scaffold.OriginFile, err)
-		return
+		return fmt.Errorf("write %s: %w (service files may already be updated; review git diff)", scaffold.OriginFile, err)
 	}
 	p.Step("%s → %s", scaffold.OriginFile, src.Commit[:min(12, len(src.Commit))])
+	return nil
 }
 
 // recordBaseRef 把用户显式给的 --base-ref 写成 origin(如果之前没有)。
@@ -298,6 +303,13 @@ func recordBaseRef(p *ui.Printer, up *scaffold.Upgrade, src scaffold.Source, o *
 		return
 	}
 	p.Step("%s ← base %s(--base-ref 已记录,下次不必再传)", scaffold.OriginFile, up.Base[:min(12, len(up.Base))])
+}
+
+func ensureWriteAllowed(serviceRoot string, allowDirty bool) error {
+	if allowDirty {
+		return nil
+	}
+	return requireCleanWorktree(serviceRoot)
 }
 
 // requireCleanWorktree 确认服务目录在 git 里且没有未提交改动。

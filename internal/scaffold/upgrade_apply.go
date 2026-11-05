@@ -170,7 +170,12 @@ func (u *Upgrade) Apply(rep Reporter, sel Selection) (int, error) {
 	if err != nil {
 		return 0, fmt.Errorf("create staging dir: %w", err)
 	}
-	defer os.RemoveAll(stage)
+	keepStage := false
+	defer func() {
+		if !keepStage {
+			_ = os.RemoveAll(stage)
+		}
+	}()
 	stagedDir := filepath.Join(stage, "new")
 	backupDir := filepath.Join(stage, "old")
 
@@ -222,26 +227,26 @@ func (u *Upgrade) Apply(rep Reporter, sel Selection) (int, error) {
 		bak := filepath.Join(backupDir, rel)
 
 		if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
-			return 0, u.failApply(rep, rollback, c, err)
+			return 0, u.failApply(rep, rollback, c, err, stage, &keepStage)
 		}
 		m := moved{change: c}
 		if st, serr := os.Lstat(dst); serr == nil {
 			if st.IsDir() {
 				// 服务里这个路径是目录,模板要在这里放文件。把目录整个挪进备份再盖
 				// 文件上去在技术上可行,但那是在替用户决定删一棵树 —— 不做
-				return 0, u.failApply(rep, rollback, c, errors.New("target is a directory"))
+				return 0, u.failApply(rep, rollback, c, errors.New("target is a directory"), stage, &keepStage)
 			}
 			if err := os.MkdirAll(filepath.Dir(bak), 0o755); err != nil {
-				return 0, u.failApply(rep, rollback, c, err)
+				return 0, u.failApply(rep, rollback, c, err, stage, &keepStage)
 			}
 			if err := os.Rename(dst, bak); err != nil {
-				return 0, u.failApply(rep, rollback, c, err)
+				return 0, u.failApply(rep, rollback, c, err, stage, &keepStage)
 			}
 			m.backed = true
 		}
 		done = append(done, m)
 		if err := os.Rename(src, dst); err != nil {
-			return 0, u.failApply(rep, rollback, c, err)
+			return 0, u.failApply(rep, rollback, c, err, stage, &keepStage)
 		}
 		// 和比对列表区分开:那一屏是「将要怎样」,这一行是「已经写了」
 		rep.Step("wrote %s", c.Path)
@@ -249,11 +254,12 @@ func (u *Upgrade) Apply(rep Reporter, sel Selection) (int, error) {
 	return len(done), nil
 }
 
-func (u *Upgrade) failApply(rep Reporter, rollback func() error, c Change, cause error) error {
+func (u *Upgrade) failApply(rep Reporter, rollback func() error, c Change, cause error, stage string, keepStage *bool) error {
 	if rerr := rollback(); rerr != nil {
-		// 回滚也失败是最坏情况:明确告诉用户目录已不可信,让他去 git
-		return fmt.Errorf("write %s: %w; rollback also failed (%v) — service dir is inconsistent, use git to restore",
-			c.Path, cause, rerr)
+		// 回滚也失败时保留旧文件备份,让用户可以手工恢复或交给 git。
+		*keepStage = true
+		return fmt.Errorf("write %s: %w; rollback also failed (%v) — backup kept at %s; service dir is inconsistent, use git to restore",
+			c.Path, cause, rerr, stage)
 	}
 	rep.Warn("write %s failed, nothing was changed", c.Path)
 	return fmt.Errorf("write %s: %w (rolled back, no file was changed)", c.Path, cause)

@@ -2,6 +2,7 @@ package scaffold
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -179,6 +180,20 @@ func TestUpgradeApplyRollsBackOnFailure(t *testing.T) {
 	for _, e := range entries {
 		assert.False(t, strings.HasPrefix(e.Name(), ".co-upgrade-"), "暂存目录必须清掉: %s", e.Name())
 	}
+}
+
+func TestFailApplyKeepsStageWhenRollbackFails(t *testing.T) {
+	stage := t.TempDir()
+	keepStage := false
+	up := &Upgrade{}
+
+	err := up.failApply(silentReporter{}, func() error {
+		return errors.New("restore failed")
+	}, Change{Path: "app.go"}, errors.New("rename failed"), stage, &keepStage)
+
+	require.Error(t, err)
+	assert.True(t, keepStage, "回滚失败时必须保留 staging 目录")
+	assert.Contains(t, err.Error(), "backup kept at "+stage)
 }
 
 // 正常路径:写完之后暂存目录不留,内容与权限正确。

@@ -23,16 +23,13 @@ import (
 //
 // upgrade 的做法是「重新生成一份干净的,再和现状比」:
 // 用同样的身份(name/module/layout)和反推出来的 feature 生成到临时目录,
-// 逐文件比对。这样不需要在产物里埋版本号或状态文件 —— 那种状态一旦和实际代码
-// 对不上(比如用户手动改过),后续所有决策都建立在假事实上。
+// 逐文件比对。产物只写一份不可变的生成来源记录，不记录 feature 或文件归属等
+// 代码现状；后者一旦和实际代码对不上(比如用户手动改过),后续决策就会建立在假事实上。
 //
-// 默认只报告不写盘。理由与 README 里「减法比改写可靠」是同一条:
-// 我们无法区分「这个文件和模板不一样」是因为模板演进了,还是因为用户故意改的。
-// 猜错的代价是静默吞掉用户的修改,所以把判断权交回给人,--write 由 git 兜底。
-//
-// 唯一一处主动「合并」是锚点:参考副本不带资源,锚点上方是空的,而服务里那里
-// 堆着历次插进去的接线。不处理的话这几个文件永远 modified,--write 会把接线
-// 抹掉且 go build 不报错。所以比对前先把锚点上方的接线搬进副本(upgrade_anchor.go)。
+// 默认只报告不写盘。无法确认差异来自模板演进还是用户定制时，工具不替人
+// 决定；--write 由 git 工作区检查、分层写入策略和可回滚暂存目录共同兜底。
+// 有 .co-origin.yaml 时还会用生成时模板快照做三方合并；没有 base 时才退回
+// 两方比对与锚点搬运。参考副本不带业务资源，锚点上方的服务接线会被保留。
 
 // ChangeKind 是一个文件相对模板新版的状态。
 type ChangeKind int
@@ -204,98 +201,48 @@ type UpgradeOptions struct {
 
 // PlanUpgrade 比对一个已生成的服务与模板新版。
 func PlanUpgrade(ctx context.Context, src Source, m *manifest.Manifest, opts UpgradeOptions) (*Upgrade, error) {
-	info, err := InspectTarget(opts.ServiceDir)
-	if err != nil {
-		return nil, err
-	}
-
-	layoutName, err := detectLayout(info, m)
-	if err != nil {
-		return nil, err
-	}
-	layout := m.Layouts[layoutName]
-
-	name := opts.Name
-	if name == "" {
-		name = detectName(info, layout)
-	}
-
-	// 先确认「这个目录确实长得像该布局生成出来的服务」。
-	// 少了这一步,在仓库根跑 upgrade 会拿根目录当服务目录去比,
-	// 结果是一屏毫无意义的 added。
-	if err := checkServiceDir(info.Root, layout, name); err != nil {
-		return nil, err
-	}
-
-	features, err := DetectFeatures(info.Root, m)
-	if err != nil {
-		return nil, fmt.Errorf("detect features: %w", err)
-	}
-	enabled := enabledFeatures(features)
-
 	tempDir, err := os.MkdirTemp("", "co-upgrade-")
 	if err != nil {
 		return nil, fmt.Errorf("create temp dir: %w", err)
 	}
 
-	keepExample := detectKeepExample(info.Root, m)
+	pruned, err := PruneServiceTemplate(ctx, src, m, PruneOptions{
+		ReferenceDir: opts.ServiceDir,
+		OutputDir:    tempDir,
+		Name:         opts.Name,
+		Render: RenderParams{
+			ServiceName:     opts.ServiceName,
+			DockerRegistry:  opts.DockerRegistry,
+			DockerNamespace: opts.DockerNamespace,
+			ConsulAddr:      opts.ConsulAddr,
+		},
+	})
+	if err != nil {
+		_ = os.RemoveAll(tempDir)
+		return nil, err
+	}
 
 	up := &Upgrade{
-		ServiceRoot: info.Root,
-		Name:        name,
-		Module:      info.Module,
-		Layout:      layoutName,
-		Features:    enabled,
-		KeepExample: keepExample,
+		ServiceRoot: pruned.ReferenceRoot,
+		Name:        pruned.Options.Name,
+		Module:      pruned.Options.Module,
+		Layout:      pruned.Options.Layout,
+		Features:    pruned.Features,
+		KeepExample: pruned.Options.KeepExample,
 		FreshCommit: src.Commit,
 		tempDir:     tempDir,
 	}
-
-	// NoResource:只比骨架与基础设施。业务资源(proto/biz/data/service)生成之后
-	// 就归用户了,几乎必然被改过,拿它们比对只会淹没真正该看的那几行。
-	//
-	// KeepExample 跟着服务走:示例资源在,参考副本就也保留它 —— 这样 +co:example
-	// 标记的那些行(handler 参数、注册块)在副本里是正当内容,而不是靠锚点搬运
-	// 才留下来的「服务自己的东西」。示例文件本身不在锚点旁,不保留就会被报成
-	// 一堆 modified。
-	plan, err := NewPlan(src, m, Options{
-		Name:            name,
-		Module:          info.Module,
-		Dest:            tempDir,
-		Layout:          layoutName,
-		Features:        enabled,
-		NoResource:      true,
-		KeepExample:     keepExample,
-		ServiceName:     opts.ServiceName,
-		DockerRegistry:  opts.DockerRegistry,
-		DockerNamespace: opts.DockerNamespace,
-		ConsulAddr:      opts.ConsulAddr,
-	})
-	if err != nil {
-		up.cleanup()
-		return nil, err
-	}
-
-	// 比对不需要 buf/sqlc/go mod tidy 的产物,跑它们只是拖慢一次只读操作;
-	// 而且 hook 失败只告警,留下的半成品会被当成「模板新版」参与比对。
-	plan.Hooks = nil
-
-	if err := Apply(ctx, plan, silentReporter{}); err != nil {
-		up.cleanup()
-		return nil, fmt.Errorf("generate reference copy: %w", err)
-	}
-
-	up.freshRoot = filepath.Join(tempDir, plan.ServiceDir)
+	up.freshRoot = pruned.ServiceRoot
 
 	// base:模板在生成时的样子,同样的身份和 feature 再生成一份。
 	// 有了它,「这一行和模板不一样」就能分成「模板改了」和「用户改的」。
-	baseWarnings, err := up.prepareBase(ctx, src, opts, plan.Opts)
+	baseWarnings, err := up.prepareBase(ctx, src, opts, pruned.Options)
 	if err != nil {
 		up.cleanup()
 		return nil, err
 	}
 
-	changes, next, warnings, err := diffTrees(up.freshRoot, up.baseRoot, info.Root)
+	changes, next, warnings, err := diffTrees(up.freshRoot, up.baseRoot, pruned.ReferenceRoot)
 	if err != nil {
 		up.cleanup()
 		return nil, err
@@ -304,6 +251,31 @@ func PlanUpgrade(ctx context.Context, src Source, m *manifest.Manifest, opts Upg
 	up.next = next
 	up.Warnings = append(baseWarnings, warnings...)
 	return up, nil
+}
+
+// fetchOptionsForTemplate 将 origin 中记录的模板来源转换成 FetchOptions。
+// origin 是历史事实，三方合并必须从当时的仓库取 base，而不能从用户后来
+// 传入的另一个模板仓库猜一个同名 revision。
+func fetchOptionsForTemplate(template string, fallback FetchOptions) (FetchOptions, error) {
+	if template == "" {
+		return fallback, nil
+	}
+	if strings.Contains(template, "://") || strings.HasPrefix(template, "git@") {
+		fallback.Dir = ""
+		fallback.Repo = template
+		return fallback, nil
+	}
+
+	root, err := filepath.Abs(template)
+	if err != nil {
+		return FetchOptions{}, err
+	}
+	if _, err := os.Stat(filepath.Join(root, manifest.Path)); err != nil {
+		return FetchOptions{}, fmt.Errorf("recorded template %q is unavailable: %w (use --no-base or pass a matching --base-ref)", template, err)
+	}
+	fallback.Dir = root
+	fallback.Repo = ""
+	return fallback, nil
 }
 
 // prepareBase 决定 base 来自哪里并把它生成到临时目录。返回的告警是「有 base 但打了折扣」的情况。
@@ -317,6 +289,7 @@ func (u *Upgrade) prepareBase(ctx context.Context, src Source, opts UpgradeOptio
 	}
 
 	rev := opts.BaseRev
+	baseFetch := opts.Fetch
 	var warnings []string
 	if rev == "" {
 		origin, err := ReadOrigin(u.ServiceRoot)
@@ -332,9 +305,12 @@ func (u *Upgrade) prepareBase(ctx context.Context, src Source, opts UpgradeOptio
 			warnings = append(warnings, fmt.Sprintf(
 				"%s: template working tree was dirty at generation; base %s is approximate, review merges", OriginFile, short(rev)))
 		}
-		if origin.Template != "" && src.Repo != "" && origin.Template != src.Repo {
-			warnings = append(warnings, fmt.Sprintf(
-				"%s says the service was generated from %s, but comparing against %s", OriginFile, origin.Template, src.Repo))
+		if origin.Template != "" {
+			var err error
+			baseFetch, err = fetchOptionsForTemplate(origin.Template, opts.Fetch)
+			if err != nil {
+				return nil, fmt.Errorf("%s: %w", OriginFile, err)
+			}
 		}
 	}
 
@@ -348,7 +324,7 @@ func (u *Upgrade) prepareBase(ctx context.Context, src Source, opts UpgradeOptio
 		return warnings, nil
 	}
 
-	baseSrc, err := FetchAt(ctx, opts.Fetch, rev)
+	baseSrc, err := FetchAt(ctx, baseFetch, rev)
 	if err != nil {
 		return nil, fmt.Errorf("base revision %s: %w (pass --no-base to compare without one)", short(rev), err)
 	}
@@ -580,6 +556,15 @@ func diffTrees(freshRoot, baseRoot, serviceRoot string) ([]Change, map[string][]
 
 		current, rerr := os.ReadFile(filepath.Join(serviceRoot, rel))
 		if os.IsNotExist(rerr) {
+			// base 中存在、现状中不存在表示用户删除了该文件。模板升级不应
+			// 把这个删除误判为模板新增并在 --write 时复活它。
+			if baseRoot != "" {
+				if _, berr := os.Stat(filepath.Join(baseRoot, rel)); berr == nil {
+					return nil
+				} else if !os.IsNotExist(berr) {
+					return berr
+				}
+			}
 			changes = append(changes, Change{Path: slashRel, Kind: ChangeAdded})
 			next[slashRel] = fresh
 			return nil
@@ -590,7 +575,8 @@ func diffTrees(freshRoot, baseRoot, serviceRoot string) ([]Change, map[string][]
 		current = normalize(slashRel, current)
 
 		// 有 base 且这个文件在 base 里也有:三方合并。
-		// base 里没有(模板在 base 之后才加的文件,而服务里已经有了)就退回两方。
+		// base 里没有而服务里已有:该文件可能是用户先加的,不能让
+		// --write-modified 静默用模板版本覆盖它。
 		if gitPath != "" {
 			base, berr := os.ReadFile(filepath.Join(baseRoot, rel))
 			if berr == nil {
@@ -614,6 +600,15 @@ func diffTrees(freshRoot, baseRoot, serviceRoot string) ([]Change, map[string][]
 				return nil
 			} else if !os.IsNotExist(berr) {
 				return berr
+			} else {
+				// base 没有而 current 已有时，无法判断这是用户新增文件还是
+				// 模板历史分支；保守阻断，避免 --write-modified 覆盖用户文件。
+				changes = append(changes, Change{
+					Path: slashRel, Kind: ChangeModified,
+					Blocked: "file is absent from the recorded template base; cannot distinguish a user file from a template addition — review by hand",
+				})
+				next[slashRel] = fresh
+				return nil
 			}
 		}
 
