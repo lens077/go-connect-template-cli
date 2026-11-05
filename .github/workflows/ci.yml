@@ -47,7 +47,9 @@ jobs:
           go install github.com/bufbuild/buf/cmd/buf@v1.72.0
           go install github.com/sqlc-dev/sqlc/cmd/sqlc@v1.31.1
           go install google.golang.org/protobuf/cmd/protoc-gen-go
-          go install connectrpc.com/connect/cmd/protoc-gen-connect-go
+          # 模板 v0.3.0 起生成物基于 connect-go v2,CI 的插件必须同代,
+          # 否则 monorepo 测试的 buf 钩子会产出 v1 形状、与模板编译冲突。
+          go install connectrpc.com/connect/v2/cmd/protoc-gen-connect-go@v2.0.2
 
       - name: Download dependencies
         run: go mod download
