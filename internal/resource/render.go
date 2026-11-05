@@ -63,11 +63,11 @@ func (s Spec) Anchors() []manifest.Insert {
 		{Anchor: "service-providers", Text: fmt.Sprintf("New%sService,", s.Pascal)},
 		{Anchor: "server-imports", Text: fmt.Sprintf("%q", path.Join(s.Module, s.APIDir, s.ConnectPkg))},
 		{Anchor: "server-handler-params", Text: fmt.Sprintf("%sService %s.%sServiceHandler,", s.Camel, s.ConnectPkg, s.Pascal)},
-		// handlerOptions 定义在 server.go 里,把 validate 拦截器追加到全局
-		// Connect 选项上。用它而不是自己 append,是为了让每个 handler 拿到
-		// 独立的一份选项切片(见 server.go 里那段注释)。
+		// connect v2:注册行走 connect.Server,必须落在 connecthttp.Mount
+		// 之前(Mount 按当前过程表装配路由);validate 等拦截器挂在
+		// connect.NewServer 上,注册处不再有选项可传。
 		{Anchor: "server-handler-register", Text: fmt.Sprintf(
-			"mux.Handle(%s.New%sServiceHandler(%sService, handlerOptions(connectOptions)...))",
+			"%s.Register%sServiceHandler(server, %sService)",
 			s.ConnectPkg, s.Pascal, s.Camel)},
 	}
 }

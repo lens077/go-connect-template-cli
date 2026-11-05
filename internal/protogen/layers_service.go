@@ -21,14 +21,13 @@ func renderService(spec LayerSpec) ([]byte, error) {
 	if nUnary+nStream > 0 {
 		std = append(std, "context")
 	}
-	if nStream > 0 {
-		std = append(std, "errors")
-	}
 	if needsJSON(spec) {
 		std = append(std, "encoding/json")
 	}
-	if nUnary+nStream > 0 {
-		third = append(third, "connectrpc.com/connect")
+	// connect v2:unary 签名与返回值都不再引用 connect 核心包(去泛型包装、
+	// 直接返回消息);只有流式方法的 unimplemented 错误用到它。
+	if nStream > 0 {
+		third = append(third, "connectrpc.com/connect/v2")
 	}
 	third = append(third, spec.ConnectImport)
 	if usesPB(spec) {
@@ -63,7 +62,7 @@ func renderService(spec LayerSpec) ([]byte, error) {
 	for _, m := range spec.Service.Methods {
 		b.WriteByte('\n')
 		if m.Stream() {
-			writeMethod(&b, recv, spec.Service.Name, m)
+			writeMethod(&b, recv, spec.Service.Name, spec.ConnectPkg, m)
 			continue
 		}
 		writeServiceUnary(&b, spec, recv, m)
@@ -115,10 +114,12 @@ func writeServiceImports(b *bytes.Buffer, std []string, spec LayerSpec, third []
 	b.WriteString(")\n\n")
 }
 
+// writeServiceUnary 生成 connect v2 的 unary handler:直接收发消息,
+// 不再有 connect.Request/Response 泛型包装。
 func writeServiceUnary(b *bytes.Buffer, spec LayerSpec, recv string, m Method) {
 	reqT := pbType(m.RequestType, m.Request)
 	respT := pbType(m.ResponseType, m.Response)
-	fmt.Fprintf(b, "func (%s *%s) %s(ctx context.Context, c *connect.Request[%s]) (*connect.Response[%s], error) {\n",
+	fmt.Fprintf(b, "func (%s *%s) %s(ctx context.Context, req *%s) (*%s, error) {\n",
 		recv, spec.Service.Name, m.Name, reqT, respT)
 
 	emptyReq := isEmpty(m.RequestType, m.Request)
@@ -127,19 +128,19 @@ func writeServiceUnary(b *bytes.Buffer, spec LayerSpec, recv string, m Method) {
 	switch {
 	case emptyReq && emptyResp:
 		fmt.Fprintf(b, "\tif err := %s.uc.%s(ctx); err != nil {\n\t\treturn nil, err\n\t}\n", recv, m.Name)
-		b.WriteString("\treturn connect.NewResponse(&emptypb.Empty{}), nil\n")
+		b.WriteString("\treturn &emptypb.Empty{}, nil\n")
 	case emptyReq:
 		fmt.Fprintf(b, "\tout, err := %s.uc.%s(ctx)\n", recv, m.Name)
 		b.WriteString("\tif err != nil {\n\t\treturn nil, err\n\t}\n")
-		fmt.Fprintf(b, "\treturn connect.NewResponse(to%sPB(out)), nil\n", m.Response)
+		fmt.Fprintf(b, "\treturn to%sPB(out), nil\n", m.Response)
 	case emptyResp:
-		fmt.Fprintf(b, "\tif err := %s.uc.%s(ctx, to%s(c.Msg)); err != nil {\n\t\treturn nil, err\n\t}\n",
+		fmt.Fprintf(b, "\tif err := %s.uc.%s(ctx, to%s(req)); err != nil {\n\t\treturn nil, err\n\t}\n",
 			recv, m.Name, m.Request)
-		b.WriteString("\treturn connect.NewResponse(&emptypb.Empty{}), nil\n")
+		b.WriteString("\treturn &emptypb.Empty{}, nil\n")
 	default:
-		fmt.Fprintf(b, "\tout, err := %s.uc.%s(ctx, to%s(c.Msg))\n", recv, m.Name, m.Request)
+		fmt.Fprintf(b, "\tout, err := %s.uc.%s(ctx, to%s(req))\n", recv, m.Name, m.Request)
 		b.WriteString("\tif err != nil {\n\t\treturn nil, err\n\t}\n")
-		fmt.Fprintf(b, "\treturn connect.NewResponse(to%sPB(out)), nil\n", m.Response)
+		fmt.Fprintf(b, "\treturn to%sPB(out), nil\n", m.Response)
 	}
 	b.WriteString("}\n")
 }

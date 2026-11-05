@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -69,6 +70,17 @@ func TestGeneratedServiceUsesPublishedSharedKit(t *testing.T) {
 		contents, readErr := os.ReadFile(filepath.Join(root, filepath.FromSlash(rel)))
 		require.NoError(t, readErr)
 		assert.NotContains(t, string(contents), "\nauth:", "未启用 casdoor 时 %s 不应保留 auth 配置", rel)
+	}
+
+	// 验收目标是「已发布」的 kit:本地 replace(CO_USE_LOCAL_MODULES)代替不了
+	// 代理上的真实拉取。kit 发新版本时 tag push 之前代理上没有可验证的对象,
+	// 跳过并说明;push 后 go list 能看到该版本,验收自动恢复执行。
+	listCmd := exec.Command("go", "list", "-m", "-versions", kitModule)
+	listCmd.Dir = root
+	listOut, listErr := listCmd.Output()
+	if listErr != nil || !strings.Contains(" "+string(listOut)+" ", " "+kitVersion+" ") {
+		t.Skipf("go-connect-kit %s 尚未发布到模块代理(push tag 后此验收自动生效);go list: %s (%v)",
+			kitVersion, strings.TrimSpace(string(listOut)), listErr)
 	}
 
 	for _, command := range [][]string{

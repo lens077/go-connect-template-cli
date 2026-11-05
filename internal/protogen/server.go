@@ -62,7 +62,16 @@ func RenderServer(spec ServerSpec) ([]byte, error) {
 	// 东西必须无条件编译得过,否则用户第一反应是 co 坏了。
 	b.WriteString("import (\n")
 	if len(spec.Service.Methods) > 0 {
-		fmt.Fprintf(&b, "\t\"context\"\n\t\"errors\"\n\n\t\"connectrpc.com/connect\"\n\tv1 %q\n", spec.PBImport)
+		// v2 的 unimplemented 错误直接收 message 字符串,不再需要 errors 包。
+		fmt.Fprintf(&b, "\t\"context\"\n\n\t\"connectrpc.com/connect/v2\"\n")
+		// bidi 的 handler 签名只含流类型(不引用消息类型);只有存在非 bidi
+		// 方法时 v1 别名才会被引用,否则是 "imported and not used"。
+		for _, m := range spec.Service.Methods {
+			if !(m.ClientStream && m.ServerStream) {
+				fmt.Fprintf(&b, "\tv1 %q\n", spec.PBImport)
+				break
+			}
+		}
 	}
 	fmt.Fprintf(&b, "\t%q\n)\n\n", spec.ConnectImport)
 
@@ -73,7 +82,7 @@ func RenderServer(spec ServerSpec) ([]byte, error) {
 
 	for _, m := range spec.Service.Methods {
 		b.WriteString("\n")
-		writeMethod(&b, recv, spec.Service.Name, m)
+		writeMethod(&b, recv, spec.Service.Name, spec.ConnectPkg, m)
 	}
 
 	// 格式化顺带当语法检查:拼串拼错了会在这儿报,而不是等到用户 go build
@@ -84,22 +93,25 @@ func RenderServer(spec ServerSpec) ([]byte, error) {
 	return out, nil
 }
 
-func writeMethod(b *bytes.Buffer, recv, svc string, m Method) {
+// writeMethod 生成 connect v2 的 handler 签名。流类型由 v2 生成器按
+// <Service><Method>ServerStream/ClientStream 产在每个 *v1connect 包里
+// (bidi 也用 ServerStream 类型);unary 去掉了泛型包装,与 gRPC-Go 同形。
+func writeMethod(b *bytes.Buffer, recv, svc, connectPkg string, m Method) {
 	switch {
 	case m.ClientStream && m.ServerStream:
-		fmt.Fprintf(b, "func (%s *%s) %s(ctx context.Context, stream *connect.BidiStream[v1.%s, v1.%s]) error {\n",
-			recv, svc, m.Name, m.Request, m.Response)
+		fmt.Fprintf(b, "func (%s *%s) %s(ctx context.Context, stream %s.%s%sServerStream) error {\n",
+			recv, svc, m.Name, connectPkg, svc, m.Name)
 		fmt.Fprintf(b, "\treturn %s\n}\n", errValue(svc, m.Name))
 	case m.ClientStream:
-		fmt.Fprintf(b, "func (%s *%s) %s(ctx context.Context, stream *connect.ClientStream[v1.%s]) (*connect.Response[v1.%s], error) {\n",
-			recv, svc, m.Name, m.Request, m.Response)
+		fmt.Fprintf(b, "func (%s *%s) %s(ctx context.Context, stream %s.%s%sClientStream) (*v1.%s, error) {\n",
+			recv, svc, m.Name, connectPkg, svc, m.Name, m.Response)
 		fmt.Fprintf(b, "\treturn nil, %s\n}\n", errValue(svc, m.Name))
 	case m.ServerStream:
-		fmt.Fprintf(b, "func (%s *%s) %s(ctx context.Context, req *connect.Request[v1.%s], stream *connect.ServerStream[v1.%s]) error {\n",
-			recv, svc, m.Name, m.Request, m.Response)
+		fmt.Fprintf(b, "func (%s *%s) %s(ctx context.Context, req *v1.%s, stream %s.%s%sServerStream) error {\n",
+			recv, svc, m.Name, m.Request, connectPkg, svc, m.Name)
 		fmt.Fprintf(b, "\treturn %s\n}\n", errValue(svc, m.Name))
 	default:
-		fmt.Fprintf(b, "func (%s *%s) %s(ctx context.Context, req *connect.Request[v1.%s]) (*connect.Response[v1.%s], error) {\n",
+		fmt.Fprintf(b, "func (%s *%s) %s(ctx context.Context, req *v1.%s) (*v1.%s, error) {\n",
 			recv, svc, m.Name, m.Request, m.Response)
 		fmt.Fprintf(b, "\treturn nil, %s\n}\n", errValue(svc, m.Name))
 	}
@@ -107,9 +119,10 @@ func writeMethod(b *bytes.Buffer, recv, svc string, m Method) {
 
 // errValue 返回一个 Unimplemented 错误。
 // 用返回错误而不是 panic:handler 跑在服务进程里,panic 会带走整个进程,
-// 而没实现的方法本该只让这一次调用失败。
+// 而没实现的方法本该只让这一次调用失败。v2 的 NewError 收公开 message
+// 字符串,不再包 errors.New。
 func errValue(svc, method string) string {
-	return fmt.Sprintf("connect.NewError(connect.CodeUnimplemented, errors.New(%q))", svc+"."+method+" is not implemented")
+	return fmt.Sprintf("connect.NewError(connect.CodeUnimplemented, %q)", svc+"."+method+" is not implemented")
 }
 
 // importPathOf 由 dir 上方最近的 go.mod 推出该目录的导入路径。

@@ -48,7 +48,7 @@ var wiringLines = map[string][]string{
 	"internal/server/server.go": {
 		`"github.com/acme/cart/api/cart/v1/cartv1connect"`,
 		"cartService cartv1connect.CartServiceHandler,",
-		"mux.Handle(cartv1connect.NewCartServiceHandler(cartService, handlerOptions(connectOptions)...))",
+		"cartv1connect.RegisterCartServiceHandler(server, cartService)",
 	},
 }
 
@@ -206,7 +206,7 @@ func TestPlanUpgradeCleanWithKeepExample(t *testing.T) {
 	exampleWiring := map[string][]string{
 		"internal/server/server.go": {
 			"searchv1connect.SearchServiceHandler",
-			"searchv1connect.NewSearchServiceHandler(",
+			"searchv1connect.RegisterSearchServiceHandler(server, searchv1Service)",
 		},
 	}
 	for rel, lines := range exampleWiring {

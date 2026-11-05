@@ -215,7 +215,7 @@ func TestRenderLayersCartLike(t *testing.T) {
 	svcSrc := byRel["internal/service/cart.go"]
 	assert.Contains(t, svcSrc, "var _ cartv1connect.CartServiceHandler = (*CartService)(nil)")
 	assert.Contains(t, svcSrc, "func NewCartService(uc *biz.CartUseCase, log *zap.Logger)")
-	assert.Contains(t, svcSrc, "s.uc.GetCart(ctx, toGetCartRequest(c.Msg))")
+	assert.Contains(t, svcSrc, "s.uc.GetCart(ctx, toGetCartRequest(req))")
 	assert.Contains(t, svcSrc, "toGetCartResponsePB(out)")
 	assert.Contains(t, svcSrc, "func toCartItem(")
 	assert.Contains(t, svcSrc, "biz.CartStatus(")

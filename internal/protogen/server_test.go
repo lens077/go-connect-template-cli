@@ -91,13 +91,15 @@ func TestRenderServer(t *testing.T) {
 	assert.Contains(t, src, "var _ orderv1connect.OrderServiceHandler = (*OrderService)(nil)")
 	assert.Contains(t, src, "func NewOrderService() orderv1connect.OrderServiceHandler {")
 
-	assert.Contains(t, src, "func (o *OrderService) CreateOrder(ctx context.Context, req *connect.Request[v1.CreateOrderRequest]) (*connect.Response[v1.CreateOrderReply], error)")
-	assert.Contains(t, src, "func (o *OrderService) Upload(ctx context.Context, stream *connect.ClientStream[v1.Chunk]) (*connect.Response[v1.UploadReply], error)")
-	assert.Contains(t, src, "func (o *OrderService) Watch(ctx context.Context, req *connect.Request[v1.WatchRequest], stream *connect.ServerStream[v1.Event]) error")
-	assert.Contains(t, src, "func (o *OrderService) Session(ctx context.Context, stream *connect.BidiStream[v1.In, v1.Out]) error")
+	// connect v2 签名:unary 去泛型包装,流式用生成在每个 *v1connect 包里的
+	// per-RPC 流类型(bidi 也用 ServerStream 类型)。
+	assert.Contains(t, src, "func (o *OrderService) CreateOrder(ctx context.Context, req *v1.CreateOrderRequest) (*v1.CreateOrderReply, error)")
+	assert.Contains(t, src, "func (o *OrderService) Upload(ctx context.Context, stream orderv1connect.OrderServiceUploadClientStream) (*v1.UploadReply, error)")
+	assert.Contains(t, src, "func (o *OrderService) Watch(ctx context.Context, req *v1.WatchRequest, stream orderv1connect.OrderServiceWatchServerStream) error")
+	assert.Contains(t, src, "func (o *OrderService) Session(ctx context.Context, stream orderv1connect.OrderServiceSessionServerStream) error")
 
 	// 未实现的方法返回错误而不是 panic —— panic 会带走整个服务进程
-	assert.Contains(t, src, `connect.NewError(connect.CodeUnimplemented, errors.New("OrderService.CreateOrder is not implemented"))`)
+	assert.Contains(t, src, `connect.NewError(connect.CodeUnimplemented, "OrderService.CreateOrder is not implemented")`)
 	assert.NotContains(t, src, "panic(")
 }
 

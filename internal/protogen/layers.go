@@ -111,7 +111,7 @@ func (s LayerSpec) WireItems() []WireItem {
 		{File: defaultAnchors["server-handler-params"], Anchor: "server-handler-params",
 			Text: fmt.Sprintf("%s %s.%sHandler,", param, s.ConnectPkg, s.Service.Name)},
 		{File: defaultAnchors["server-handler-register"], Anchor: "server-handler-register",
-			Text: fmt.Sprintf("mux.Handle(%s.New%sHandler(%s, handlerOptions(connectOptions)...))",
+			Text: fmt.Sprintf("%s.Register%sHandler(server, %s)",
 				s.ConnectPkg, s.Service.Name, param)},
 	}
 }
