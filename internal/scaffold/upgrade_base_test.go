@@ -33,10 +33,15 @@ func templateGitRoot(t *testing.T) (string, string) {
 }
 
 // evolveTemplate 把模板拷到临时目录并应用一处修改,返回作为 fresh 的 Source。
-func evolveTemplate(t *testing.T, root string, edit func(dir string)) Source {
+func evolveTemplate(t *testing.T, root, commit string, edit func(dir string)) Source {
 	t.Helper()
 	dir := filepath.Join(t.TempDir(), "template")
-	require.NoError(t, copyTree(root, dir, PathSkipper(".git")))
+	// 从 commit 的 git 导出拷贝,而不是工作树:工作树里的未跟踪本地文件
+	// (如 configs/source.dev.yaml)会混进 fresh,被合并器当成模板新增,
+	// 真值表失真——与服务生成(generateWithOrigin)的口径保持一致。
+	srcAt, err := FetchAt(context.Background(), FetchOptions{Dir: root}, commit)
+	require.NoError(t, err)
+	require.NoError(t, copyTree(srcAt.Root, dir, PathSkipper(".git")))
 	edit(dir)
 	src, err := Fetch(context.Background(), FetchOptions{Dir: dir})
 	require.NoError(t, err)
@@ -53,9 +58,29 @@ func replaceInFile(t *testing.T, path, old, new string) {
 }
 
 // generateWithOrigin 生成服务并写 origin(模拟 co new)。
+// 服务从 commit 的 git 导出生成,而非工作树:工作树里的未跟踪本地文件
+// (如 configs/source.dev.yaml——含机器 token,永不入库)不在 HEAD 导出里,
+// 会被合并器判成「分不清用户文件还是模板新增」,真值表失真。生产上
+// co new 对脏工作树会告警;测试按干净检出语义布置。
 func generateWithOrigin(t *testing.T, root, commit string) string {
 	t.Helper()
-	serviceRoot, _ := generateFixture(t, upgradeFixtureFeatures)
+	src, err := FetchAt(context.Background(), FetchOptions{Dir: root}, commit)
+	require.NoError(t, err)
+	m, err := manifest.Load(src.Root)
+	require.NoError(t, err)
+	dest := t.TempDir()
+	plan, err := NewPlan(src, m, Options{
+		Name:     "cart",
+		Module:   "github.com/acme/cart",
+		Dest:     dest,
+		Layout:   "standalone",
+		Features: upgradeFixtureFeatures,
+	})
+	require.NoError(t, err)
+	// 不跑 buf/sqlc/go mod tidy;它们的产物不参与比对,见 skipCompare
+	plan.Hooks = nil
+	require.NoError(t, Apply(context.Background(), plan, silentReporter{}))
+	serviceRoot := filepath.Join(dest, plan.ServiceDir)
 	require.NoError(t, WriteOrigin(serviceRoot, Origin{Template: root, Commit: commit, Co: "test"}))
 	return serviceRoot
 }
@@ -69,7 +94,7 @@ func TestThreeWayMerge(t *testing.T) {
 
 	t.Run("template changed, service untouched → take template", func(t *testing.T) {
 		serviceRoot := generateWithOrigin(t, root, commit)
-		fresh := evolveTemplate(t, root, func(dir string) {
+		fresh := evolveTemplate(t, root, commit, func(dir string) {
 			replaceInFile(t, filepath.Join(dir, serverRel), healthComment, healthComment+"(新版)")
 		})
 		_, m := templateSource(t)
@@ -90,7 +115,7 @@ func TestThreeWayMerge(t *testing.T) {
 		serviceRoot := generateWithOrigin(t, root, commit)
 		// 用户在锚点段之外改了一行 —— 两方比对下这会被报成 modified 并盖掉
 		replaceInFile(t, filepath.Join(serviceRoot, serverRel), healthComment, "// 我们自己的注释")
-		fresh := evolveTemplate(t, root, func(string) {})
+		fresh := evolveTemplate(t, root, commit, func(string) {})
 		_, m := templateSource(t)
 
 		up, err := PlanUpgrade(context.Background(), fresh, m, UpgradeOptions{ServiceDir: serviceRoot, Fetch: fetch})
@@ -102,7 +127,7 @@ func TestThreeWayMerge(t *testing.T) {
 	t.Run("both changed different lines → merge keeps both", func(t *testing.T) {
 		serviceRoot := generateWithOrigin(t, root, commit)
 		replaceInFile(t, filepath.Join(serviceRoot, serverRel), "// 构建处理器链", "// 构建处理器链(我们改的)")
-		fresh := evolveTemplate(t, root, func(dir string) {
+		fresh := evolveTemplate(t, root, commit, func(dir string) {
 			replaceInFile(t, filepath.Join(dir, serverRel), healthComment, healthComment+"(新版)")
 		})
 		_, m := templateSource(t)
@@ -127,7 +152,7 @@ func TestThreeWayMerge(t *testing.T) {
 	t.Run("both changed the same line → conflict, never written", func(t *testing.T) {
 		serviceRoot := generateWithOrigin(t, root, commit)
 		replaceInFile(t, filepath.Join(serviceRoot, serverRel), healthComment, "// 我们改的")
-		fresh := evolveTemplate(t, root, func(dir string) {
+		fresh := evolveTemplate(t, root, commit, func(dir string) {
 			replaceInFile(t, filepath.Join(dir, serverRel), healthComment, "// 模板改的")
 		})
 		_, m := templateSource(t)
@@ -160,7 +185,7 @@ func TestThreeWayMerge(t *testing.T) {
 	t.Run("legacy file with a base is merged, not blocked", func(t *testing.T) {
 		serviceRoot := generateWithOrigin(t, root, commit)
 		stripped := stripAnchors(t, serviceRoot)
-		fresh := evolveTemplate(t, root, func(dir string) {
+		fresh := evolveTemplate(t, root, commit, func(dir string) {
 			replaceInFile(t, filepath.Join(dir, serverRel), healthComment, healthComment+"(新版)")
 		})
 		_, m := templateSource(t)
@@ -194,7 +219,7 @@ func TestThreeWayMerge(t *testing.T) {
 	t.Run("--no-base falls back to two-way", func(t *testing.T) {
 		serviceRoot := generateWithOrigin(t, root, commit)
 		replaceInFile(t, filepath.Join(serviceRoot, serverRel), healthComment, "// 我们自己的注释")
-		fresh := evolveTemplate(t, root, func(string) {})
+		fresh := evolveTemplate(t, root, commit, func(string) {})
 		_, m := templateSource(t)
 
 		up, err := PlanUpgrade(context.Background(), fresh, m, UpgradeOptions{ServiceDir: serviceRoot, Fetch: fetch, NoBase: true})
@@ -205,8 +230,13 @@ func TestThreeWayMerge(t *testing.T) {
 	})
 
 	t.Run("origin pointing at an unfetchable revision is an error, not a silent fallback", func(t *testing.T) {
-		serviceRoot := generateWithOrigin(t, root, "0000000000000000000000000000000000000000")
-		fresh := evolveTemplate(t, root, func(string) {})
+		// 服务按真 commit 生成,origin 单独覆写成假 revision:测的是
+		// PlanUpgrade 对不可解析 origin 的反应,不是生成阶段。
+		serviceRoot := generateWithOrigin(t, root, commit)
+		require.NoError(t, WriteOrigin(serviceRoot, Origin{
+			Template: root, Commit: "0000000000000000000000000000000000000000", Co: "test",
+		}))
+		fresh := evolveTemplate(t, root, commit, func(string) {})
 		_, m := templateSource(t)
 
 		_, err := PlanUpgrade(context.Background(), fresh, m, UpgradeOptions{ServiceDir: serviceRoot, Fetch: fetch})
@@ -295,7 +325,7 @@ func TestThreeWayMergeAdjacentToAnchor(t *testing.T) {
 	const old = "NewSearchCatalog, // +co:elasticsearch|meilisearch"
 
 	serviceRoot := generateWithOrigin(t, root, commit)
-	fresh := evolveTemplate(t, root, func(dir string) {
+	fresh := evolveTemplate(t, root, commit, func(dir string) {
 		replaceInFile(t, filepath.Join(dir, dataRel), old, "NewCatalog, // +co:elasticsearch|meilisearch")
 	})
 	_, m := templateSource(t)
