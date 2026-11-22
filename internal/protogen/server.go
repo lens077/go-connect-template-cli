@@ -67,7 +67,7 @@ func RenderServer(spec ServerSpec) ([]byte, error) {
 		// bidi 的 handler 签名只含流类型(不引用消息类型);只有存在非 bidi
 		// 方法时 v1 别名才会被引用,否则是 "imported and not used"。
 		for _, m := range spec.Service.Methods {
-			if !(m.ClientStream && m.ServerStream) {
+			if !m.ClientStream || !m.ServerStream {
 				fmt.Fprintf(&b, "\tv1 %q\n", spec.PBImport)
 				break
 			}

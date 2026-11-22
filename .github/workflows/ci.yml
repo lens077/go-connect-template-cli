@@ -17,6 +17,28 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Check out CLI
+        uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      # golangci-lint v2 默认 linters（errcheck/staticcheck/unused 等），
+      # 版本与本地基线一致；存量问题已清零，新违规直接红。
+      - name: Lint
+        uses: golangci/golangci-lint-action@v8
+        with:
+          version: v2.13.2
+
   test:
     name: Test, vet, and generate
     runs-on: ubuntu-latest

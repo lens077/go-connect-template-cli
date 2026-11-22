@@ -1,0 +1,14 @@
+# golangci-lint v2 配置。lint job 与本地基线都用 golangci-lint v2.13.2。
+#
+# errcheck 豁免 fmt.Fprint* 系列：CLI 往 stderr/--dry-run 清单 writer 的打印
+# 写失败无从处理（终端场景没有恢复手段），是 errcheck 社区惯例的豁免对象；
+# 文件句柄 Close、临时目录清理等仍正常检查。
+version: "2"
+
+linters:
+  settings:
+    errcheck:
+      exclude-functions:
+        - fmt.Fprint
+        - fmt.Fprintf
+        - fmt.Fprintln

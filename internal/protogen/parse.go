@@ -100,7 +100,7 @@ func ParseFile(path string) (File, error) {
 	if err != nil {
 		return File{}, err
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 
 	// Permissive 模式容忍非规范但 protoc 接受的写法(如尾随逗号)。
 	// 这里的目的是读出 service,不是当 linter,严格解析只会平白拒掉能编译的文件。

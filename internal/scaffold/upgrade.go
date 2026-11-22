@@ -238,13 +238,13 @@ func PlanUpgrade(ctx context.Context, src Source, m *manifest.Manifest, opts Upg
 	// 有了它,「这一行和模板不一样」就能分成「模板改了」和「用户改的」。
 	baseWarnings, err := up.prepareBase(ctx, src, opts, pruned.Options)
 	if err != nil {
-		up.cleanup()
+		_ = up.cleanup()
 		return nil, err
 	}
 
 	changes, next, warnings, err := diffTrees(up.freshRoot, up.baseRoot, pruned.ReferenceRoot)
 	if err != nil {
-		up.cleanup()
+		_ = up.cleanup()
 		return nil, err
 	}
 	up.Changes = changes

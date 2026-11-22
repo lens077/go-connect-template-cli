@@ -245,13 +245,13 @@ func exportTree(commit *object.Commit, dest string) error {
 		if err != nil {
 			return err
 		}
-		defer r.Close()
+		defer func() { _ = r.Close() }()
 		out, err := os.OpenFile(target, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, mode.Perm())
 		if err != nil {
 			return err
 		}
 		if _, err := io.Copy(out, r); err != nil {
-			out.Close()
+			_ = out.Close()
 			return err
 		}
 		return out.Close()

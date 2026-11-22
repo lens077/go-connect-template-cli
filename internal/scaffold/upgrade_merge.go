@@ -33,7 +33,7 @@ func merge3(gitPath string, current, base, fresh []byte) (mergeResult, error) {
 	if err != nil {
 		return mergeResult{}, err
 	}
-	defer os.RemoveAll(tmp)
+	defer func() { _ = os.RemoveAll(tmp) }()
 
 	cur := filepath.Join(tmp, "current")
 	bas := filepath.Join(tmp, "base")
