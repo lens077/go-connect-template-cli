@@ -559,3 +559,52 @@ func TestCarryAnchorsDropsStrayImportsOutsideImportBlock(t *testing.T) {
 	got, _ = carryAnchors("internal/server/server.go", fresh, current)
 	assert.Equal(t, current, got)
 }
+
+// 模板在 server-imports 锚点下方新增 import、在锚点区外新增 handler 包装时,
+// upgrade 必须把这两处模板演进带上,同时保留服务自己的接线。
+//
+// 这是 InstrumentHTTP 下沉到 kit 后的真实场景:旧服务没有 otel import 和
+// handler 包装,upgrade 到新模板要能补上。锚点下方的 import 属于模板
+// (dropImports 会丢掉服务侧多出的 import 但保留 fresh 自带的),handler 包装
+// 在 server-handler-register 之后、不属于任何锚点段,直接取 fresh。
+func TestUpgradeCarriesTemplateInstrumentHTTP(t *testing.T) {
+	serviceRoot, src := generateFixture(t, upgradeFixtureFeatures)
+
+	serverPath := filepath.Join(serviceRoot, "internal", "server", "server.go")
+	orig, err := os.ReadFile(serverPath)
+	require.NoError(t, err)
+
+	// 把服务退回「旧模板」:删掉 OTel import 和 handler 包装行,
+	// 但保留 cartv1connect 接线(它在 server-imports 锚点上方)。
+	stale := string(orig)
+	stale = strings.Replace(stale, "\tsharedotel \"github.com/lens077/go-connect-kit/otel\"\n", "", 1)
+	stale = strings.Replace(stale, "\t\"github.com/lens077/go-connect-kit/meta\"\n", "", 1)
+	stale = strings.Replace(stale, "\tdeps *data.Data, // 基础设施依赖\n\tinfo meta.AppInfo,", "\tdeps *data.Data, // 基础设施依赖", 1)
+	stale = strings.Replace(stale,
+		"\t// OTel 在 h2c 之前包一层，看到协议升级前的原始 HTTP 请求。\n"+
+			"\t// helper 内部统一排除 /healthz 探针，operation 用服务名保证各服务可区分。\n"+
+			"\thandlerChain = sharedotel.InstrumentHTTP(handlerChain, info.Name+\"-server\")\n", "", 1)
+	require.NotEqual(t, string(orig), stale)
+	require.NoError(t, os.WriteFile(serverPath, []byte(stale), 0o644))
+
+	_, m := templateSource(t)
+	up, err := PlanUpgrade(context.Background(), src, m, UpgradeOptions{ServiceDir: serviceRoot})
+	require.NoError(t, err)
+	defer func() { _ = up.Close() }()
+
+	require.Len(t, up.Changes, 1, "只有 server.go 该报 modified: %+v", up.Changes)
+	assert.Equal(t, "internal/server/server.go", up.Changes[0].Path)
+	assert.Empty(t, up.Changes[0].Blocked, "server.go 不该被 blocked(它有锚点,不是 legacy)")
+
+	next, current, err := up.Diff("internal/server/server.go")
+	require.NoError(t, err)
+	assert.Equal(t, stale, string(current))
+	assert.Contains(t, string(next), "sharedotel.InstrumentHTTP(handlerChain, info.Name+\"-server\")",
+		"模板新增的 handler 包装必须带上")
+	assert.Contains(t, string(next), "sharedotel \"github.com/lens077/go-connect-kit/otel\"",
+		"模板在锚点下方新增的 import 必须带上")
+	assert.Contains(t, string(next), "info meta.AppInfo,", "模板新增的参数必须带上")
+	assertWiringIntact(t, serviceRoot)
+	assert.Contains(t, string(next), `"github.com/acme/cart/api/cart/v1/cartv1connect"`,
+		"服务侧 server-imports 锚点上方的 import 必须保留")
+}
